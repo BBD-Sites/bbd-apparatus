@@ -46,7 +46,9 @@ KINDS = ("version", "model", "fresh-session")
 TOKEN = re.compile(r"bbdt_[A-Za-z0-9]{40}")
 VERSION = re.compile(r"^\s*v?(\d+\.\d+\.\d+)(?![\w.-])")
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
-DATED = re.compile(r"-\d{8}$")
+# A dated snapshot (claude-x-20250929) and a long-context form (claude-x[1m]) name the
+# same model as the bare id; both suffixes are dropped before the lineup is searched.
+SUFFIX = re.compile(r"(-\d{8})?(\[[^\]]*\])?$")
 TEXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "text", "notices")
 TRANSCRIPT_LIMIT = 262144
 
@@ -152,7 +154,7 @@ def marker_allows(root: str) -> bool:
 
 
 def find_model(models: list, model_id: str) -> dict | None:
-    want = DATED.sub("", model_id or "")
+    want = SUFFIX.sub("", (model_id or "").strip(), count=1)
     for m in models:
         if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"] == want:
             return m

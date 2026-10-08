@@ -142,6 +142,17 @@ start odd "$home" s-o1 startup some-other-model "no version here"
 h_assert_hook_run odd "an odd version and an unknown model"
 h_assert_empty "$(h_run_out odd)" "an odd version and an unknown model: nothing is said"
 
+# A model id in its long-context form (a bracketed suffix) or its dated form is the
+# same model: it is compared, and the window it is compared against is its own.
+home=$(newhome suffix)
+start bracket "$home" s-br startup "claude-opus-5[1m]" "$latest_cli (Claude Code)"
+h_assert_hook_run bracket "a bracketed model id"
+if has "$(ctx bracket)" "$newest_opus"; then h_ok "a bracketed model id: the model notice still comes"; else h_fail "a bracketed model id: no model notice"; fi
+start bracket-ctx "$home" s-br2 resume "claude-opus-5-5[1m]" "$latest_cli (Claude Code)" context_tokens=700000
+if has "$(ctx bracket-ctx)" "fresh session"; then h_ok "a bracketed model id: the context advice still comes"; else h_fail "a bracketed model id: no context advice"; fi
+start dated "$home" s-dt startup claude-sonnet-4-5-20250929 "$latest_cli (Claude Code)"
+if has "$(ctx dated)" "claude-sonnet-5-5"; then h_ok "a dated model id: the model notice names the newest sonnet"; else h_fail "a dated model id: no model notice"; fi
+
 # 5. Fresh-session advice after three compactions, folded into the compact step's
 # one object with the compaction notice and the rules; said once per session.
 home=$(newhome compact)
