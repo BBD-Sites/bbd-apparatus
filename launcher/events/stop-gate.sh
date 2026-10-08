@@ -15,8 +15,10 @@
 #      with the reply contract, the rules file, the session's open asks and the draft.
 #   5. A verdict of fix becomes one block, at most once per turn (lib/loopguard.py,
 #      keyed by the session and prompt_id, else the draft's hash). A verdict of send,
-#      and every failure of the reader's own (no `claude`, a timeout, a non-zero exit,
-#      an answer out of shape), lets the reply through, logged.
+#      and an answer out of shape, lets the reply through. When the reader itself
+#      could not run (no `claude`, a timeout, a non-zero exit): on a desktop home the
+#      reply goes through, logged; in a cloud session the same one block hands the
+#      model the assembled prompt to give to a reader through the Agent tool.
 #   6. A receipt is written for every read and every attempt, never for a skip.
 # Stdout here becomes the Stop decision, so nothing but that one object is printed.
 # shellcheck source=../lib/common.sh
@@ -101,14 +103,34 @@ elapsed=$(jget "$result" elapsed)
 [ -n "$status" ] || status=failed
 [ "$verdict" = fix ] || verdict=send
 
-# 5. One block per turn.
+# 5. One block per turn: the reader's findings, or, in a cloud session where the
+# reader could not run (no `claude` on the machine, a timeout, a failure), the
+# assembled prompt handed to the model to give to a reader of its own through the
+# Agent tool. On a desktop home that failure lets the reply through, logged.
+handback=""
+case "$status" in
+  no-claude|timeout|failed) [ "${BBD_WHERE:-}" = cloud ] && handback=1 ;;
+esac
 blocked=0
-if [ "$verdict" = fix ]; then
+if [ "$verdict" = fix ] || [ -n "$handback" ]; then
   turn=$pid
   [ -n "$turn" ] || turn=$(python3 "$BBD_CHECKOUT/lib/receipt.py" hash "$draft" 2>>"$BBD_LOG")
   if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
     blocked=1
-    jget "$result" reason | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
+    if [ -n "$handback" ]; then
+      {
+        printf 'The reader that checks every reply before it is sent could not run on this machine (%s). ' "$status"
+        printf 'Before you send, read it yourself through the Agent tool: start one subagent (a small, cheap model is enough), '
+        printf 'paste the whole prompt below as its task with nothing added, act on each finding it returns, '
+        printf 'then send the corrected reply. If it finds nothing, send the reply as it is.\n\n'
+        python3 "$BBD_CHECKOUT/reader/reader.py" prompt \
+          --draft "$draft" --contract "$BBD_CHECKOUT/text/reply-contract.md" \
+          --rules "$rules" --asks "$asks" --kind reply 2>>"$BBD_LOG"
+      } | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
+      status=handed-back
+    else
+      jget "$result" reason | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
+    fi
   else
     bbd_log "stop-gate: a block already happened this turn; the reply goes through"
   fi
