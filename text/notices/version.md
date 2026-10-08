@@ -1,0 +1,1 @@
+A newer Claude Code is out: version ${latest}. This session runs ${running}. Tell the person once, in one sentence in your first reply: a restart of Claude Code gets them version ${latest}, and nothing is lost by it, because their memory lives in the store and in this repository, not in the session. Say it once and do not bring it up again.

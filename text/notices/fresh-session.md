@@ -1,0 +1,1 @@
+This session ${reason}. Tell the person once, in one sentence in your next reply: a fresh session would be faster and cost less of their plan, their memory makes it free to do because everything they need is in the store and in this repository, and the choice is theirs. Say it once in this session and do not bring it up again.

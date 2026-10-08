@@ -3,9 +3,10 @@
 as the one JSON object the hook may write.
 
   inject.py --event <EventName> --cap <chars> --ledger <dir> --session <id>
-            [--text <file>]... [--section <title> <file>]...
+            [--text <file>]... [--inline <text>]... [--section <title> <file>]...
 
-In order: every --text file as it is (the apparatus's own texts), every --section as a
+In order: every --text file and --inline text as it is (the apparatus's own texts; an
+empty --inline adds nothing), every --section as a
 "## title" heading over the file (the tenant's rules and standing instructions; a
 missing or empty file gives no section), then the session's open asks from the
 ledger. The whole is at most --cap characters. The asks give way first, oldest
@@ -38,8 +39,8 @@ def read_text(path: str, limit: int) -> str:
 
 def compose(cap: int, ledger_dir: str, sid: str, texts: list, sections: list) -> str:
     parts = []
-    for path in texts:
-        text = read_text(path, cap + 1)
+    for kind, value in texts:
+        text = read_text(value, cap + 1) if kind == "file" else value.strip()[: cap + 1]
         if text:
             parts.append(text)
     for title, path in sections:
@@ -63,10 +64,12 @@ def parse(argv: list) -> dict | None:
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("--event", "--cap", "--ledger", "--session", "--text") and i + 1 < len(argv):
+        if a in ("--event", "--cap", "--ledger", "--session", "--text", "--inline") and i + 1 < len(argv):
             v = argv[i + 1]
             if a == "--text":
-                opts["texts"].append(v)
+                opts["texts"].append(("file", v))
+            elif a == "--inline":
+                opts["texts"].append(("inline", v))
             elif a == "--cap":
                 try:
                     opts["cap"] = max(0, int(v))
@@ -86,8 +89,8 @@ def parse(argv: list) -> dict | None:
 def main(argv: list) -> int:
     opts = parse(argv)
     if opts is None:
-        print("usage: inject.py --event E --cap N --ledger DIR --session ID [--text F]... [--section T F]...",
-              file=sys.stderr)
+        print("usage: inject.py --event E --cap N --ledger DIR --session ID [--text F]... [--inline T]..."
+              " [--section T F]...", file=sys.stderr)
         return 0
     sid = opts["session"] if ledger.SESSION_ID.fullmatch(opts["session"] or "") else ""
     text = compose(opts["cap"], opts["ledger"], sid, opts["texts"], opts["sections"])
