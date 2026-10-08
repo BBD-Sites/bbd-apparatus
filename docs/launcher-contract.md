@@ -125,6 +125,10 @@ must also equal `BBD_TENANT` in `tenant.env`. Otherwise the launcher does nothin
 nothing is captured, committed, pushed or injected. This is what keeps a machine that
 also works in other repositories, including a test tenant's, from shipping them.
 
+The template provisioning copies, `templates/tenant-repo/.apparatus/vault.json`, has
+the same four fields with the tenant left empty, so a copy that provisioning has not
+filled fails this gate rather than acting under a placeholder.
+
 ## 5. Exit codes and output
 
 - Every launcher exits 0 on every path, including a crash: a trap on `ERR` and `EXIT`

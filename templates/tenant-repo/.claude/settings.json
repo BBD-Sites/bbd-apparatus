@@ -1,0 +1,63 @@
+{
+  "extraKnownMarketplaces": {
+    "bbd-apparatus": {
+      "source": {
+        "source": "github",
+        "repo": "BBD-Sites/bbd-apparatus"
+      },
+      "autoUpdate": true
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh\" session-start repo",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh\" prompt repo",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh\" pre-write repo",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh\" stop-gate repo",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh\" stop-ship repo",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
