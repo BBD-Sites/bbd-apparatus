@@ -36,7 +36,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROMPT_FILE = os.path.join(HERE, "reader-prompt.md")
 TOKEN = re.compile(r"bbdt_[A-Za-z0-9]{40}")
-MODEL = "haiku"
+# Sonnet, not haiku: this reader holds the person's turn, so a false finding costs them a
+# corrected reply they did not need. Calibration 2026-10-08: haiku passed the accepted
+# draft in one run of two (the other flagged 18 things), sonnet in two of two.
+MODEL = "sonnet"
 BOUND = 60
 # A reply with fewer prose words than this is an acknowledgement or a structural
 # deliverable, not a draft anyone needs read.

@@ -538,8 +538,14 @@ ledger (the person's own words, so the reader can see what was dropped or left
 unanswered) and the draft, and runs one headless call:
 
 ```
-claude -p --model haiku --tools "" --no-session-persistence --strict-mcp-config --output-format text
+claude -p --model sonnet --tools "" --no-session-persistence --strict-mcp-config --output-format text
 ```
+
+Sonnet, not the plan's haiku, because this reader holds the person's turn and a false
+finding costs them a corrected reply they did not need: in the calibration run of
+2026-10-08 haiku passed the accepted draft in one run of two (the other flagged 18 things)
+and sonnet in two of two. The receipts under `state/reader/` are what to read after the
+canary window before anyone revisits it.
 
 with the prompt on stdin, in an empty temporary directory (so none of the person's
 project is read), with `BBD_NESTED=1` in its environment (so every launcher in that

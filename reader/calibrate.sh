@@ -10,11 +10,11 @@
 #   bash reader/calibrate.sh [--model NAME] [--bound SECONDS]
 set -u
 here=$(cd "$(dirname "$0")" && pwd -P)
-model=haiku
+model=sonnet
 bound=90
 while [ $# -gt 0 ]; do
   case "$1" in
-    --model) model=${2:-haiku}; shift 2 ;;
+    --model) model=${2:-sonnet}; shift 2 ;;
     --bound) bound=${2:-90}; shift 2 ;;
     *) echo "usage: calibrate.sh [--model NAME] [--bound SECONDS]" >&2; exit 2 ;;
   esac

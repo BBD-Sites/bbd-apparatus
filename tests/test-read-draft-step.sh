@@ -158,7 +158,7 @@ envs=$(cat "$tmp"/rec-send/env.* 2>/dev/null)
 if has "$envs" "BBD_NESTED=1"; then h_ok "the reader's session carries BBD_NESTED"; else h_fail "the reader's session does not carry BBD_NESTED"; fi
 if printf '%s\n' "$envs" | grep -q '^CLAUDECODE='; then h_fail "CLAUDECODE reached the reader's session"; else h_ok "CLAUDECODE is stripped from the reader's session"; fi
 case "$(h_calls claude)" in *"--tools ''"*|*'--tools ""'*) h_ok "the reader runs with no tools" ;; *) h_fail "the reader was not run with no tools: $(h_calls claude)" ;; esac
-case "$(h_calls claude)" in *"--model haiku"*) h_ok "the reader runs on haiku" ;; *) h_fail "the reader was not run on haiku" ;; esac
+case "$(h_calls claude)" in *"--model sonnet"*) h_ok "the reader runs on sonnet" ;; *) h_fail "the reader was not run on sonnet" ;; esac
 
 # 2. A verdict with findings: one block, the findings as the reason, the token masked.
 h_calls_reset claude
