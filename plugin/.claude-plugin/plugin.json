@@ -1,0 +1,9 @@
+{
+  "name": "bbd",
+  "version": "1",
+  "description": "A thin shell: five hook entries and a skill stub that run the apparatus bootstrap. The bootstrap keeps a checkout of the apparatus repository current and runs it, so behaviour changes there, never here. The version moves only when this shell itself changes.",
+  "author": {
+    "name": "apparatus maintainers"
+  },
+  "repository": "https://github.com/BBD-Sites/bbd-apparatus"
+}

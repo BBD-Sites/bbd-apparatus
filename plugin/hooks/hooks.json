@@ -1,0 +1,55 @@
+{
+  "description": "Every entry runs the same bootstrap, which fetches the apparatus checkout and hands the event to it. The entries never change; behaviour arrives through the checkout. Timeouts follow docs/launcher-contract.md section 7.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh\" session-start plugin",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh\" prompt plugin",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh\" pre-write plugin",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh\" stop-gate plugin",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh\" stop-ship plugin",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

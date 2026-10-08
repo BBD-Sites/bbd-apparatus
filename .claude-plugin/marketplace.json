@@ -1,0 +1,14 @@
+{
+  "name": "bbd-apparatus",
+  "description": "Memory and rules for your own Claude Code sessions: each finished turn is redacted and kept in your own store, and your rules reach every session.",
+  "owner": {
+    "name": "apparatus maintainers"
+  },
+  "plugins": [
+    {
+      "name": "bbd",
+      "source": "./plugin",
+      "description": "Ships each turn's redacted transcript to your store and brings your rules into every session. The plugin is a thin shell; what it runs is fetched from this repository's channel on every turn."
+    }
+  ]
+}
