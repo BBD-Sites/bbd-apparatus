@@ -15,7 +15,7 @@ h_fake_apparatus >/dev/null
 h_plant_event v1 prompt
 h_plant_event v1 skill
 boot=$(h_bootstrap)
-repo_copy="$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh"
+repo_copy=$(h_bootstrap repo)
 repo=$(h_fake_repo vault)
 h_mark "$repo" tenant-a
 installed=$(h_fake_home installed)

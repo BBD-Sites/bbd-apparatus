@@ -385,9 +385,10 @@ rm -f "$base/tenant.env" "$base/queue/sid-down.json"
 
 # Signed heads. There is no switch to turn the check off: an allowed_signers file,
 # wherever the bootstrap looks for one, turns it on. With none anywhere, an unsigned
-# head runs (the state until the maintainers' keys ship).
-if [ -e "$(h_repo_root)/plugin/allowed_signers" ]; then
-  h_fail "this working copy carries plugin/allowed_signers; the no-file case cannot be tested"
+# head runs. The bootstrap under test is the harness's copy with nothing beside it; the
+# file the repository ships beside the plugin copy is tests/test-signed-channel.sh's.
+if [ -e "$(dirname "$boot")/../allowed_signers" ]; then
+  h_fail "the bootstrap under test has an allowed_signers file beside it; the no-file case cannot be tested"
 fi
 h_plant_event v5 prompt
 expire_stamp

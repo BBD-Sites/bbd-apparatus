@@ -265,9 +265,31 @@ h_done() {
 
 H_APPARATUS_URL="https://github.com/BBD-Sites/bbd-apparatus.git"
 
-# The bootstrap under test, as the plugin ships it.
+# h_bootstrap [plugin|repo]: the bootstrap a test runs, as a copy under the test's temp
+# directory with nothing beside it: the plugin copy at boot/plugin/launcher/, the
+# committed copy at boot/repo/.claude/hooks/. A copy, because the bootstrap looks for an
+# allowed_signers file in the directory above its own and the repository ships one
+# beside each copy (plugin/allowed_signers, and .claude/allowed_signers in the tenant
+# template); run from the repository, every test's unsigned stand-in head would be
+# refused. From the copy, signing is off until a test puts a file where the bootstrap
+# looks. The shipped file itself is read from h_repo_root by the tests that are about it.
 h_bootstrap() {
-  printf '%s\n' "$(h_repo_root)/plugin/launcher/bbd-launch.sh"
+  local which=${1:-plugin} root src dst
+  root=$(h_repo_root)
+  case "$which" in
+    repo)
+      src="$root/templates/tenant-repo/.claude/hooks/bbd-launch.sh"
+      dst="$(h_tmpdir)/boot/repo/.claude/hooks/bbd-launch.sh" ;;
+    *)
+      src="$root/plugin/launcher/bbd-launch.sh"
+      dst="$(h_tmpdir)/boot/plugin/launcher/bbd-launch.sh" ;;
+  esac
+  if [ ! -f "$dst" ]; then
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+    chmod +x "$dst"
+  fi
+  printf '%s\n' "$dst"
 }
 
 # h_fake_apparatus: a stand-in for the public apparatus repository, built from this

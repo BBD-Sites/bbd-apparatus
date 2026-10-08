@@ -58,12 +58,12 @@ cloud() {
   h_hook_json SessionStart cwd="$repo" session_id="$sid" source="$source" model="$model" \
       transcript_path="$tmp/transcripts/$sid.jsonl" "$@" \
     | h_launch "$name" "$home" CLAUDE_CODE_REMOTE=true H_FAKE_CLAUDE_STDOUT="$latest_cli (Claude Code)" \
-        -- "$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh" session-start repo
+        -- "$(h_bootstrap repo)" session-start repo
 }
 # cloud_skill NAME HOME SKILL-NAME: one skill run from a committed cloud stub.
 cloud_skill() {
   h_launch "$1" "$2" CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR="$repo" \
-    -- "$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh" skill "$3" repo </dev/null
+    -- "$(h_bootstrap repo)" skill "$3" repo </dev/null
 }
 # start NAME HOME SESSION SOURCE MODEL [CLI-VERSION] [key=value ...]: one SessionStart
 # turn from the plugin. CLI-VERSION is what the fake `claude --version` prints.

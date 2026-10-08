@@ -390,7 +390,7 @@ else h_fail "the lock held: sending took ${took}s"; fi
 # left for another pass when it finishes. A Stop that lands during that last send
 # must still be sent: by the holder's next read, or by its own run once the lock
 # frees, never left for a later Stop.
-repo_boot="$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh"
+repo_boot=$(h_bootstrap repo)
 cloud_ship() { # NAME SESSION
   h_hook_json Stop cwd="$repo" session_id="$2" transcript_path="$H_TMP/transcripts/$2.jsonl" \
     | h_launch "$1" "$home" CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR="$repo" -- "$repo_boot" stop-ship repo

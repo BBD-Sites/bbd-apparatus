@@ -13,7 +13,7 @@ h_init
 
 h_fake_bin git
 h_fake_apparatus >/dev/null
-repo_copy="$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh"
+repo_copy=$(h_bootstrap repo)
 repo=$(h_fake_repo vault)
 h_mark "$repo" tenant-a
 remote="$H_TMP/vault.git"
