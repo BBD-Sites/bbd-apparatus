@@ -58,16 +58,26 @@ Do these passes, in order, on the draft only.
    the draft states flat as the person's own fact; a cause the assistant found for
    itself this turn is the assistant's fact, not the person's hedge, and is not listed.
 
-4. CLAIMS. The only claims that need a source are the person's own facts: who they are,
-   what they offer, what they said, what they did, what they want. For every sentence
-   that asserts one of those, find its source in THE ASKS or in THE PERSON'S RULES. A
-   claim with a source is not listed. A statement about what the assistant did, checked,
-   found or could not find this turn, including what it found about the person's own
-   site, host, files or records, has its source in the session itself and is never
-   listed. A number the writer reached by doing what was asked has a source. A claim the
-   draft marks as unverified or says it cannot know is not listed. An unmatched claim is
-   returned as a question in the person's voice, ready to paste ("Do you want this to say
-   we open on Saturdays?").
+4. CLAIMS. Every claim rests on something, and the draft has to show what. Three
+   shapes, each quoted back with what the writer must do:
+   - The person's own facts (who they are, what they offer, what they said or did,
+     what they want): the source is THE ASKS or THE PERSON'S RULES. A claim with a
+     source there is not listed. An unmatched one is returned as a question in the
+     person's voice, ready to paste ("Do you want this to say we open on Saturdays?").
+   - A fact or figure about the world stated flat (a law, a date, a price, how a search
+     engine ranks pages, what some tool does) with nothing on the page saying where it
+     came from: a page read, a note in the person's own files, a tool's result, the
+     person's own words. Quote it: "say where this comes from, or drop it".
+   - A claim of an action or a state ("merged", "live", "sent", "tested", "checked",
+     "works", "every page shows it") that the draft does not anchor with what proved
+     it: the command and its output, the message that arrived, the thing seen. Quote
+     it: "show what proved this". The anchor may sit in the proof line under the
+     closing "---", and one proof line anchors every claim it covers; a plain account
+     of what was changed ("I pointed it at the new address") is the work itself, not
+     a claim about its result, and is not listed.
+   A number the writer reached by doing what was asked has a source. A claim the draft
+   marks as unverified, says it cannot know, or hedges as its own view ("I think", "my
+   guess") is not listed. Where a claim is anchored, say nothing.
 
 5. ANSWERED. Only when THE ASKS has items. For each ask, find where the draft answers it.
    An ask is answered under its number when the draft puts that number before the answer
