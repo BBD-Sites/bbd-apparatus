@@ -78,15 +78,19 @@ Mac has none.
    - On a failed or slow fetch, the last checkout runs.
    - With no checkout at all and a failed clone: the Stop ship event appends a pointer
      record to the queue and exits 0; every other event exits 0 silently.
-5. **Signed heads (optional).** Required only where `tenant.env` sets
-   `BBD_REQUIRE_SIGNED_HEAD=1`; the default is off until the maintainers' signing keys
-   exist. When required, `git -c gpg.ssh.allowedSignersFile=<file> verify-commit`
-   must pass on the fetched head before it is checked out, and on the checkout before
-   it runs, with the `allowed_signers` file beside the plugin's launcher directory or
-   at `CFG/bbd-apparatus/allowed_signers`; otherwise the checkout returns to the last
-   verified commit (`state/verified-<channel>`), and with none, the run behaves as if
-   there were no checkout. One push to `stable` runs on every tenant's next turn, so a
-   head that no maintainer key signed is not run.
+5. **Signed heads.** There is no setting that turns this off, because the bootstrap
+   never changes and an off default would stay off forever. An `allowed_signers` file
+   turns it on. The bootstrap looks for one beside the plugin
+   (`$CLAUDE_PLUGIN_ROOT/allowed_signers`, else the directory above the bootstrap,
+   which is `plugin/` for the plugin copy and `.claude/` for the committed copy), then
+   at `CFG/bbd-apparatus/allowed_signers`. With such a file present, even an empty one,
+   `git -c gpg.ssh.allowedSignersFile=<file> verify-commit` must pass on the fetched
+   head before it is checked out, and on the checkout before it runs. An unsigned or
+   badly signed head is refused, and the last verified checkout
+   (`state/verified-<channel>`) runs; with none, the run behaves as if there were no
+   checkout. With no file anywhere, heads are not verified; that is the state until the
+   maintainers' signing keys ship with the plugin. One push to `stable` runs on every
+   tenant's next turn, so once the keys ship, a head no maintainer key signed is not run.
 6. **Hand-off.** Run the checkout's `launcher/dispatch.sh` as a child, with the event,
    the delivery and the saved stdin as a file:
    `dispatch.sh <event> <delivery> <input-file> [skill name]`. It is a child, not an

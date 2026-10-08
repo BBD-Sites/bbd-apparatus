@@ -2,7 +2,7 @@
 # What fail safe means (docs/launcher-contract.md section 6), one planted failure at
 # a time: offline, a checkout that cannot fast-forward, a fetch slower than its
 # bound, no checkout and no network, a held fetch lock, a corrupt config, a crashing
-# or chattering event, and an unsigned head when signed heads are required. In every
+# or chattering event, and an unsigned head where an allowed signers file exists. In every
 # case the launcher exits 0 and prints nothing but hook JSON, and the turn's
 # transcript is still queued or the last checkout still runs.
 set -u
@@ -258,16 +258,27 @@ h_apparatus_file launcher/dispatch.sh "$(cat "$(h_repo_root)/launcher/dispatch.s
 
 # The bound's watcher leaves nothing behind: no sleep of the fetch bound or the
 # dispatcher's outer bound outlives a run.
-# The process ids are compared, not a count, because other sleeps on the machine
-# come and go meanwhile.
-watcher_sleeps() { pgrep -f -x 'sleep (3|600)' 2>/dev/null | sort; }
-watcher_sleeps >"$H_TMP/sleeps.before"
+# Only orphans count: a leaked sleep has lost its watcher, while a sleep whose parent
+# is still a bash process belongs to a launcher that is still running (another test
+# run on the same machine, say). Process ids are compared, not a count, because other
+# sleeps come and go meanwhile.
+orphan_sleeps() {
+  local pid ppid pcomm
+  for pid in $(pgrep -f -x 'sleep (3|600)' 2>/dev/null); do
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -n "$ppid" ] || continue
+    pcomm=$(ps -o comm= -p "$ppid" 2>/dev/null)
+    case "$pcomm" in *bash) continue ;; esac
+    echo "$pid"
+  done | sort
+}
+orphan_sleeps >"$H_TMP/sleeps.before"
 for n in 1 2 3; do
   expire_stamp
   prompt "no-leak-$n"
 done
 sleep 1
-watcher_sleeps >"$H_TMP/sleeps.after"
+orphan_sleeps >"$H_TMP/sleeps.after"
 h_assert_empty "$(comm -13 "$H_TMP/sleeps.before" "$H_TMP/sleeps.after")" "no watcher sleep outlives a run"
 
 # A checkout whose .git is broken, in a home that is itself a git repository (a
@@ -354,53 +365,105 @@ if grep -rq "$body" "$H_TMP/run" "$base/state" "$base/queue"; then h_fail "a lau
 else h_ok "a launcher run with a token prints and logs none of it"; fi
 rm -f "$base/tenant.env"
 
-# Signed heads: off by default; when required, an unsigned head is not run, and the
-# transcript is still queued.
+# Signed heads. There is no switch to turn the check off: an allowed_signers file,
+# wherever the bootstrap looks for one, turns it on. With none anywhere, an unsigned
+# head runs (the state until the maintainers' keys ship).
+if [ -e "$(h_repo_root)/plugin/allowed_signers" ]; then
+  h_fail "this working copy carries plugin/allowed_signers; the no-file case cannot be tested"
+fi
 h_plant_event v5 prompt
 expire_stamp
-h_tenant_env "$home" tenant-a "BBD_REQUIRE_SIGNED_HEAD=1"
-signed_boot="$H_TMP/plugin/launcher/bbd-launch.sh"
-mkdir -p "$H_TMP/plugin/launcher"
-cp "$boot" "$signed_boot"
 h_sentinel_reset
-h_hook_json Hook cwd="$repo" | h_launch unsigned "$home" -- "$signed_boot" prompt plugin
-h_assert_hook_run unsigned "unsigned head, signatures required, no allowed signers"
-h_assert_empty "$(h_sentinel)" "unsigned head: its code did not run"
-h_hook_json Stop cwd="$repo" session_id=sid-unsigned | h_launch unsigned-ship "$home" -- "$signed_boot" stop-ship plugin
-h_assert_hook_run unsigned-ship "unsigned head, stop-ship"
-if [ -f "$base/queue/sid-unsigned.json" ]; then h_ok "unsigned head: the transcript is still queued"
-else h_fail "unsigned head: nothing queued"; fi
+h_hook_json Hook cwd="$repo" | h_launch no-signers "$home" -- "$boot" prompt plugin
+h_assert_hook_run no-signers "no allowed signers anywhere"
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v5" "no allowed signers anywhere: an unsigned head runs"
 
-# With an allowed key: a signed head runs; an unsigned one pushed after it does not,
-# and the checkout returns to the last head that verified.
+# A signers file is present but empty: that is not an off switch, every head is
+# refused. With no head ever verified, nothing runs, and the transcript still queues.
+: >"$base/allowed_signers"
+h_plant_event v5b prompt
+expire_stamp
+h_sentinel_reset
+h_hook_json Hook cwd="$repo" | h_launch empty-signers "$home" -- "$boot" prompt plugin
+h_assert_hook_run empty-signers "an empty allowed signers file"
+h_assert_empty "$(h_run_out empty-signers)" "an empty allowed signers file: nothing on stdout"
+h_assert_empty "$(h_sentinel)" "an empty allowed signers file: the unsigned head did not run"
+h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$(git -C "$bare" rev-parse stable~1)" "an empty allowed signers file: the unsigned head was not checked out"
+h_hook_json Stop cwd="$repo" session_id=sid-unsigned | h_launch unsigned-ship "$home" -- "$boot" stop-ship plugin
+h_assert_hook_run unsigned-ship "an unsigned head refused, stop-ship"
+if [ -f "$base/queue/sid-unsigned.json" ]; then h_ok "an unsigned head refused: the transcript is still queued"
+else h_fail "an unsigned head refused: nothing queued"; fi
+rm -f "$base/allowed_signers"
+
 if command -v ssh-keygen >/dev/null 2>&1; then
   # Assembled, so no email address is written into this public file.
   at="@"
   ssh-keygen -q -t ed25519 -N '' -C test -f "$H_TMP/signer" >/dev/null
-  printf 'signer%sexample.invalid namespaces="git" %s\n' "$at" "$(cut -d' ' -f1,2 "$H_TMP/signer.pub")" >"$H_TMP/plugin/allowed_signers"
-  # shellcheck disable=SC2016  # the planted script expands H_SENTINEL when it runs
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" signed >>"$H_SENTINEL"\n' >"$src/launcher/events/prompt.sh"
-  chmod +x "$src/launcher/events/prompt.sh"
-  git -C "$src" add -A
-  git -C "$src" -c user.name=t -c "user.email=t${at}example.invalid" -c gpg.format=ssh \
-    -c user.signingkey="$H_TMP/signer" commit -q -S -m "test: signed"
-  git -C "$src" push -q -f "$bare" HEAD:refs/heads/stable
-  expire_stamp
-  h_sentinel_reset
-  h_hook_json Hook cwd="$repo" | h_launch signed "$home" -- "$signed_boot" prompt plugin
-  h_assert_hook_run signed "signed head"
-  h_assert_eq "$(h_sentinel)" "signed" "signed head: its code ran"
+  ssh-keygen -q -t ed25519 -N '' -C test -f "$H_TMP/stranger" >/dev/null
+  signers_line=$(printf 'signer%sexample.invalid namespaces="git" %s' "$at" "$(cut -d' ' -f1,2 "$H_TMP/signer.pub")")
+  # publish_signed KEY TAG: a channel head whose prompt event records TAG, signed by KEY.
+  publish_signed() {
+    # shellcheck disable=SC2016  # the planted script expands H_SENTINEL when it runs
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" %s >>"$H_SENTINEL"\n' "$2" >"$src/launcher/events/prompt.sh"
+    chmod +x "$src/launcher/events/prompt.sh"
+    git -C "$src" add -A
+    git -C "$src" -c user.name=t -c "user.email=t${at}example.invalid" -c gpg.format=ssh \
+      -c user.signingkey="$H_TMP/$1" commit -q -S -m "test: signed $2"
+    git -C "$src" push -q -f "$bare" HEAD:refs/heads/stable
+  }
+  # run_signed NAME [VAR=value ...]: one prompt with a fresh fetch.
+  run_signed() {
+    local name=$1
+    shift
+    expire_stamp
+    h_sentinel_reset
+    h_hook_json Hook cwd="$repo" | h_launch "$name" "$home" "$@" -- "$boot" prompt plugin
+    h_assert_hook_run "$name" "$name"
+    h_assert_empty "$(h_run_out "$name")" "$name: nothing on stdout"
+  }
+
+  # The file beside the plugin, found through CLAUDE_PLUGIN_ROOT.
+  mkdir -p "$H_TMP/plugin-root"
+  printf '%s\n' "$signers_line" >"$H_TMP/plugin-root/allowed_signers"
+  publish_signed signer signed-1
+  run_signed signed-head CLAUDE_PLUGIN_ROOT="$H_TMP/plugin-root"
+  h_assert_eq "$(h_sentinel)" "signed-1" "a correctly signed head is accepted and runs"
   good=$(git -C "$co" rev-parse HEAD)
+
   h_plant_event v6 prompt
+  run_signed unsigned-head CLAUDE_PLUGIN_ROOT="$H_TMP/plugin-root"
+  h_assert_eq "$(h_sentinel)" "signed-1" "an unsigned head is refused and the last verified checkout runs"
+  h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$good" "an unsigned head is never checked out"
+
+  publish_signed stranger stranger-1
+  run_signed stranger-head CLAUDE_PLUGIN_ROOT="$H_TMP/plugin-root"
+  h_assert_eq "$(h_sentinel)" "signed-1" "a head signed by a key not allowed is refused and the last verified checkout runs"
+  h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$good" "a head signed by a key not allowed is never checked out"
+
+  # The same refusal with the file in the home's own apparatus directory.
+  rm -f "$H_TMP/plugin-root/allowed_signers"
+  printf '%s\n' "$signers_line" >"$base/allowed_signers"
+  run_signed home-signers
+  h_assert_eq "$(h_sentinel)" "signed-1" "with the file in CFG/bbd-apparatus, the badly signed head is refused"
+  rm -f "$base/allowed_signers"
+
+  # And with the file beside a plugin found from the bootstrap's own location.
+  mkdir -p "$H_TMP/plugin/launcher"
+  cp "$boot" "$H_TMP/plugin/launcher/bbd-launch.sh"
+  printf '%s\n' "$signers_line" >"$H_TMP/plugin/allowed_signers"
   expire_stamp
   h_sentinel_reset
-  h_hook_json Hook cwd="$repo" | h_launch resigned "$home" -- "$signed_boot" prompt plugin
-  h_assert_hook_run resigned "unsigned head after a signed one"
-  h_assert_eq "$(h_sentinel)" "signed" "unsigned head after a signed one: the last verified code ran"
-  h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$good" "unsigned head after a signed one: the checkout returned to it"
+  h_hook_json Hook cwd="$repo" | h_launch beside-signers "$home" -- "$H_TMP/plugin/launcher/bbd-launch.sh" prompt plugin
+  h_assert_hook_run beside-signers "allowed signers beside the plugin"
+  h_assert_eq "$(h_sentinel)" "signed-1" "with the file beside the plugin, the badly signed head is refused"
+
+  # A newer correctly signed head is accepted again.
+  publish_signed signer signed-2
+  run_signed signed-again CLAUDE_PLUGIN_ROOT="$H_TMP/plugin"
+  h_assert_eq "$(h_sentinel)" "signed-2" "a later correctly signed head is accepted"
+  rm -f "$H_TMP/plugin/allowed_signers"
 else
-  echo "skip: no ssh-keygen, signed-head acceptance not checked"
+  echo "skip: no ssh-keygen, signed and badly signed heads not checked"
 fi
-rm -f "$base/tenant.env"
 
 h_done

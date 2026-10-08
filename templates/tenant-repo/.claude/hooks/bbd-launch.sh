@@ -327,22 +327,23 @@ bbd_git() {
     -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 "$@"
 }
 
-# 5 (setup). Signed heads. OFF by default, and on only where tenant.env sets
-# BBD_REQUIRE_SIGNED_HEAD=1, until the maintainers' signing keys exist and an
-# allowed_signers file ships beside this script's directory (or in
-# CFG/bbd-apparatus/). When on, a head no allowed key signed is never checked out,
-# and never run: the checkout stays at, or returns to, the last head that verified,
-# and with none, this run behaves as if there were no checkout at all.
+# 5 (setup). Signed heads. There is no switch: this file never changes, so an off
+# default here would be off forever. Instead, the presence of an allowed_signers
+# file decides. It is looked for beside the plugin (CLAUDE_PLUGIN_ROOT, else the
+# directory above this script, which is the plugin root for the plugin copy and the
+# repository's .claude/ for the committed copy), then in CFG/bbd-apparatus/. With
+# such a file anywhere, signing is required: a head no allowed key signed is never
+# checked out and never run; the checkout stays at, or returns to, the last head that
+# verified, and with none, this run behaves as if there were no checkout at all. An
+# empty file still counts as present, so emptying it refuses every head rather than
+# switching the check off. With no file anywhere, heads are not verified: that is the
+# state until the maintainers' signing keys ship with the plugin.
 signed=""
 signers=""
-case "$(bbd_env_get BBD_REQUIRE_SIGNED_HEAD)" in
-  1|true|yes)
-    signed=1
-    for f in "$here/../allowed_signers" "$base/allowed_signers"; do
-      if [ -s "$f" ]; then signers=$f; break; fi
-    done
-    ;;
-esac
+for f in ${CLAUDE_PLUGIN_ROOT:+"$CLAUDE_PLUGIN_ROOT/allowed_signers"} \
+    "$here/../allowed_signers" "$base/allowed_signers"; do
+  if [ -e "$f" ]; then signed=1; signers=$f; break; fi
+done
 verified=$base/state/verified-$channel
 bbd_verify() { # REV
   [ -n "$signers" ] && bbd_git -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >>"$_bbd_log" 2>&1

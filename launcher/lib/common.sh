@@ -84,15 +84,14 @@ bbd_log() {
 }
 
 # bbd_tenant_env FILE: parse tenant.env as KEY=VALUE text. It is never sourced, so a
-# line in it can never execute. Sets BBD_ENV_TENANT, BBD_ENV_CHANNEL,
-# BBD_ENV_INGEST_URL and BBD_ENV_REQUIRE_SIGNED_HEAD; the token goes only into
-# _BBD_TOKEN, which is never exported, so no child process inherits it.
+# line in it can never execute. Sets BBD_ENV_TENANT, BBD_ENV_CHANNEL and
+# BBD_ENV_INGEST_URL; the token goes only into _BBD_TOKEN, which is never exported,
+# so no child process inherits it.
 bbd_tenant_env() {
   local file=$1 line key val
   BBD_ENV_TENANT=""
   BBD_ENV_CHANNEL=""
   BBD_ENV_INGEST_URL=""
-  BBD_ENV_REQUIRE_SIGNED_HEAD=""
   _BBD_TOKEN=""
   [ -f "$file" ] && [ -r "$file" ] || return 0
   # A file this large is not one the installer wrote; reading it is not worth it.
@@ -109,7 +108,6 @@ bbd_tenant_env() {
       BBD_TENANT) BBD_ENV_TENANT=$val ;;
       BBD_CHANNEL) BBD_ENV_CHANNEL=$val ;;
       BBD_INGEST_URL) BBD_ENV_INGEST_URL=$val ;;
-      BBD_REQUIRE_SIGNED_HEAD) BBD_ENV_REQUIRE_SIGNED_HEAD=$val ;;
       BBD_TOKEN) _BBD_TOKEN=$val ;;
     esac
   done <"$file"
