@@ -248,21 +248,27 @@ In order:
 1. **Queue.** Write or refresh this session's pointer record first, so nothing that
    follows can lose the turn.
 2. **Lock.** One ship step at a time per home (`state/ship.lock`); two draining one
-   queue would send a session twice. A run that finds the lock held waits up to 5
-   seconds for it, so a Stop that lands at the tail of another run still sends its
-   own turn. If the holder is still busy after that, the run leaves; its pointer is
-   already queued.
-   - The holder never lets go of the lock without looking again. After its first
-     pass, and for up to three more passes, it ships the turns queued after the last
-     pass began, newest first. These are turns whose own Stop found the lock held:
-     a later turn of a session it was sending, or another session. Without this, a
-     session's last turn would wait for a Stop that may never come.
-   - A rescan stops when nothing new arrived, or when no entry's render and
-     post-scan would fit inside the budget.
-   - One last look always runs before the lock is let go, however long the passes
-     took. It takes only turns queued after the last pass began, and it is held to
-     the kill itself rather than the budget. A turn whose render and send cannot
-     fit before the kill stays queued, and waits for the next Stop in this home.
+   queue would send a session twice. The handoff is closed on both sides, so a turn
+   that ends while another step holds the lock is sent by that step, or by its own
+   run once the lock frees.
+   - A run that finds the lock held waits for it, up to its own cutoff (its
+     whole-step bound minus 5 seconds). Its pointer is already queued, so waiting
+     costs nothing. When it gets the lock it ships its own session first, then old
+     entries as time allows. Its bound runs to its own cutoff, so the time it spent
+     waiting comes off its shipping time.
+   - The holder loops until quiet. It records every pointer write that was queued
+     when it began, and every write it takes. After each pass it reads the queue
+     again, and lets go of the lock only when a read finds nothing new, or when no
+     render could start inside the budget. Each read takes the writes made since it
+     began that it has not taken (a later turn of a session it was sending, another
+     session), newest first.
+   - No clock is compared, so a turn queued at any moment, or stamped by a clock
+     that runs behind, is never skipped. Older entries that were already queued are
+     not taken by these reads, so the cap of five per firing holds.
+   - Anything queued after the holder's last read belongs to a Stop that is now
+     waiting on the lock, and ships next.
+   - The one turn that can still wait for a later Stop in this home is one whose own
+     run reaches its cutoff while it is still waiting for the lock.
 3. **Self-test.** `apparatus selftest` runs once per checkout commit, and a pass is
    cached as `state/selftest-<sha>.ok`, which holds the sha256 of the redactor it
    proved, so a redactor edited in place is tested again. A failure sends nothing,

@@ -6,9 +6,11 @@ each step it takes is one subcommand here, so every step can be tested alone.
 
   ship.py queue-pointer <queue> <input-file> <where> [<project> <tenant>]
                                                        print the session id queued
-  ship.py drain-list <queue> <current> <max> [<project> <tenant>] [--since <ns>]
+  ship.py drain-list <queue> <current> <max> [<project> <tenant>] [--handled <file>]
                                                        the ids to ship this firing
-  ship.py now-ns                                       the clock, for --since
+  ship.py mark-handled <file> <queue> <sid>            this write of a pointer was taken
+  ship.py snapshot <file> <queue>                      every pointer write queued now
+  ship.py now-ns                                       the clock
   ship.py post-timeout                                 seconds one post may take
   ship.py get <queue> <sid> <field>                    one field of a pointer
   ship.py stamp <queue> <sid>                          which write of a pointer this is
@@ -177,8 +179,40 @@ def queue_pointer(queue: str, hook: dict, where: str, project: str = "", tenant:
     return sid
 
 
+def pointer_key(sid: str, rec: dict) -> str:
+    """One write of one pointer: its session and when it was queued. A later turn
+    rewrites queued_at, so it is a new key; a retry count keeps it."""
+    at = rec.get("queued_at")
+    return "%s %s" % (sid, at if isinstance(at, int) and not isinstance(at, bool) else "-")
+
+
+def read_handled(path: str) -> set:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {line.strip() for line in f if line.strip()}
+    except OSError:
+        return set()
+
+
+def mark_handled(path: str, queue: str, sid: str) -> None:
+    rec = read_json(os.path.join(queue, sid + ".json"))
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(pointer_key(sid, rec) + "\n")
+
+
+def snapshot(path: str, queue: str) -> None:
+    """Record every pointer write in the queue now, at the start of a ship step. Its
+    loop then reads only writes made after this (a turn whose own Stop found the
+    lock held), so the cap of DRAIN_MAX older entries per firing still holds."""
+    with open(path, "a", encoding="utf-8") as f:
+        for name in sorted(os.listdir(queue)):
+            sid = name[:-5] if name.endswith(".json") else ""
+            if valid_sid(sid):
+                f.write(pointer_key(sid, read_json(os.path.join(queue, name))) + "\n")
+
+
 def drain_list(queue: str, current: str, limit: int, repo: str | None = None,
-               tenant: str | None = None, since: int | None = None) -> list:
+               tenant: str | None = None, handled: set | None = None) -> list:
     """The queued sessions to try this firing: the firing session first, then the
     `limit` oldest by first seen (then by name, so the order is stable). The firing
     session goes first so that old entries that keep failing, or a store that hangs
@@ -191,9 +225,12 @@ def drain_list(queue: str, current: str, limit: int, repo: str | None = None,
     the firing session's own repository, so another project's entry stays queued for
     that project's own next Stop. Entries that do not match never take a slot.
 
-    With `since`, only entries queued after that moment are listed, newest first:
-    the turns that arrived while this ship step held the lock. The newest goes first
-    for the same reason the firing session does."""
+    With `handled` (every pointer write queued when this ship step began, and every
+    one it has taken since), only writes made after it began and not yet taken are
+    listed, newest first: the turns that arrived while it held the lock. No clock is
+    compared, so a turn queued at any moment, or stamped by a clock that runs
+    behind, is never skipped.
+    The newest goes first for the same reason the firing session does."""
     entries = []
     for name in os.listdir(queue):
         sid = name[:-5] if name.endswith(".json") else ""
@@ -206,11 +243,11 @@ def drain_list(queue: str, current: str, limit: int, repo: str | None = None,
             rec_tenant = rec.get("tenant")
             if isinstance(rec_tenant, str) and rec_tenant and rec_tenant != tenant:
                 continue
-        if since is not None:
-            at = rec.get("queued_at")
-            if not isinstance(at, int) or isinstance(at, bool) or at <= since:
+        if handled is not None:
+            if pointer_key(sid, rec) in handled:
                 continue
-            entries.append((-at, sid))
+            at = rec.get("queued_at")
+            entries.append((-(at if isinstance(at, int) and not isinstance(at, bool) else 0), sid))
             continue
         entries.append((str(rec.get("first_seen") or ""), sid))
     out = [sid for _, sid in sorted(entries)[:limit]]
@@ -547,14 +584,18 @@ def main(argv: list) -> int:
             if sid:
                 print(sid)
     elif cmd == "drain-list" and len(args) in (3, 5, 7):
-        since = None
-        if len(args) >= 5 and args[-2] == "--since":
-            since = int(args[-1])
+        handled = None
+        if len(args) >= 5 and args[-2] == "--handled":
+            handled = read_handled(args[-1])
             args = args[:-2]
         if len(args) in (3, 5):
             repo, tenant = (repo_id(args[3]), args[4]) if len(args) == 5 else (None, None)
-            for sid in drain_list(args[0], args[1], int(args[2]), repo, tenant, since):
+            for sid in drain_list(args[0], args[1], int(args[2]), repo, tenant, handled):
                 print(sid)
+    elif cmd == "mark-handled" and len(args) == 3 and valid_sid(args[2]):
+        mark_handled(args[0], args[1], args[2])
+    elif cmd == "snapshot" and len(args) == 2:
+        snapshot(args[0], args[1])
     elif cmd == "now-ns" and not args:
         print(time.time_ns())
     elif cmd == "post-timeout" and not args:
@@ -563,6 +604,8 @@ def main(argv: list) -> int:
         value = read_json(os.path.join(args[0], args[1] + ".json")).get(args[2])
         if isinstance(value, str):
             print(value.replace("\n", " "))
+        elif isinstance(value, int) and not isinstance(value, bool):
+            print(value)
     elif cmd == "stamp" and len(args) == 2 and valid_sid(args[1]):
         print(stamp(args[0], args[1]))
     elif cmd == "drop" and len(args) in (2, 3):

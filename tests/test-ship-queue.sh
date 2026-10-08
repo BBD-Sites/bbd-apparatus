@@ -384,6 +384,71 @@ else h_ok "the lock held: nothing is left queued"; fi
 if [ "$took" -le 60 ]; then h_ok "the lock held: every turn was sent inside the bound (${took}s)"
 else h_fail "the lock held: sending took ${took}s"; fi
 
+# 11e. The lock is handed over with nothing dropped in between. The repository's own
+# copy of the hook (a cloud session, which the harness stops at 60 seconds) has the
+# short bounds, so a holder whose post the store holds for 12 seconds has no budget
+# left for another pass when it finishes. A Stop that lands during that last send
+# must still be sent: by the holder's next read, or by its own run once the lock
+# frees, never left for a later Stop.
+repo_boot="$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh"
+cloud_ship() { # NAME SESSION
+  h_hook_json Stop cwd="$repo" session_id="$2" transcript_path="$H_TMP/transcripts/$2.jsonl" \
+    | h_launch "$1" "$home" CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR="$repo" -- "$repo_boot" stop-ship repo
+}
+forget_requests
+printf '/v1/captures/rh1 12\n' >"$store/slow"
+transcript rh1 >/dev/null
+transcript rh2 >/dev/null
+start=$(date +%s)
+( cloud_ship handoff-holder rh1 ) &
+holder=$!
+for _ in $(seq 1 100); do paths | grep -qx /v1/captures/rh1 && break; sleep 0.1; done
+( cloud_ship handoff-late rh2 ) &
+late=$!
+wait "$holder" "$late"
+took=$(($(date +%s) - start))
+rm -f "$store/slow"
+h_assert_hook_run handoff-holder "the holder at its last send"
+h_assert_hook_run handoff-late "a Stop that lands during the holder's last send"
+if paths | grep -qx /v1/captures/rh2; then h_ok "the lock handed over: the late Stop's turn reached the store"
+else h_fail "the lock handed over: the late Stop's turn never reached the store"; fi
+if queued rh1 || queued rh2; then h_fail "the lock handed over: a turn is still queued"
+else h_ok "the lock handed over: nothing is left queued"; fi
+if [ "$took" -le 60 ]; then h_ok "the lock handed over: both runs ended inside the harness's 60 seconds (${took}s)"
+else h_fail "the lock handed over: the runs took ${took}s"; fi
+
+# 11f. A pointer whose queued_at is no later than the moment the holder last looked
+# (written in the window between taking a clock reading and reading the queue, or
+# by a clock that runs behind) is still sent before the lock is let go. It is
+# planted while the holder's first post is held, with a queued_at far in the past.
+forget_requests
+printf '/v1/captures/win1 3\n' >"$store/slow"
+transcript win1 >/dev/null
+transcript win2 >/dev/null
+cat >"$store/hook" <<EOF
+python3 -c 'import json,sys; json.dump({"session_id": "win2", "transcript_path": sys.argv[1], "where": "desktop",
+  "first_seen": "2026-01-01T00:00:00Z", "attempts": 0, "queued_at": 1}, open(sys.argv[2] + ".tmp", "w"))' \
+  "$H_TMP/transcripts/win2.jsonl" "$queue/win2.json"
+mv "$queue/win2.json.tmp" "$queue/win2.json"
+EOF
+quiet_before=$(grep -c 'queue quiet' "$base/state/launcher.log" 2>/dev/null || true)
+start=$(date +%s)
+ship window win1
+took=$(($(date +%s) - start))
+rm -f "$store/slow"
+if [ -f "$store/hook.ran" ]; then h_ok "the window: the planted pointer was written during the holder's send"
+else h_fail "the window: the planted pointer was never written"; fi
+if paths | grep -qx /v1/captures/win2; then h_ok "the window: a pointer with an early queued_at is still sent"
+else h_fail "the window: a pointer with an early queued_at was skipped"; fi
+if queued win2; then h_fail "the window: the planted pointer is still queued"; else h_ok "the window: nothing is left queued"; fi
+
+# 11g. The holder's loop ends when a read finds nothing new: it says so once, and
+# does not run on to its bound.
+quiet_after=$(grep -c 'queue quiet' "$base/state/launcher.log" 2>/dev/null || true)
+h_assert_eq "$((quiet_after - ${quiet_before:-0}))" 1 "the holder's loop ends once, when its read finds nothing new"
+if [ "$took" -le 20 ]; then h_ok "the holder's loop ends when quiet, long before its bound (${took}s)"
+else h_fail "the holder ran ${took}s with nothing left to send"; fi
+
 # 12. A failing redactor self-test blocks every post and keeps the queue: nothing
 # leaves the machine on a redactor that cannot prove itself.
 h_apparatus_file lib/redact.py "$(cat "$src/lib/redact.py")
