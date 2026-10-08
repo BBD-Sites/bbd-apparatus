@@ -8,10 +8,15 @@ section 12).
 
   notices.py due --input <input-file> --state <notices.json> --models <models.json>
                  --cli <claude-code.json> --compactions <dir> [--root <project root>]
-                 [--running-version <x.y.z>]... [--kinds version,model,fresh-session]
+                 [--running-version <x.y.z>]... [--delivery plugin|repo]
+                 [--kinds version,model,fresh-session]
       Prints the text of every notice that is due, and records each one as said.
       Nothing is printed when nothing is due. --running-version may be given more
       than once (the transcript's and the CLI's); the newest wins.
+
+  notices.py stop <notices.json> <kind|all>
+      Records that the person does not want that kind of notice again. An unknown
+      kind is refused: exit 0, a line on stderr, nothing written.
 
 Three notices, each said once per account home:
   version        a newer Claude Code than the one running; once per newer version
@@ -43,6 +48,7 @@ FRESH_COMPACTIONS = 3
 FRESH_CONTEXT = 0.60
 
 KINDS = ("version", "model", "fresh-session")
+STOPPABLE = ("version", "model", "fresh-session")
 TOKEN = re.compile(r"bbdt_[A-Za-z0-9]{40}")
 VERSION = re.compile(r"^\s*v?(\d+\.\d+\.\d+)(?![\w.-])")
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -54,6 +60,11 @@ TEXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "text"
 # was upgraded mid-way carries two builds, the older first, so the LAST field is the
 # one that is true now, and the tail is where it is.
 TAIL_LIMIT = 262144
+
+STOP_COMMANDS = {
+    "plugin": 'bash "${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh" skill notices-stop-%s',
+    "repo": 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh" skill notices-stop-%s repo',
+}
 
 
 def now() -> str:
@@ -125,20 +136,26 @@ class Record:
 
     def __init__(self, path: str):
         self.path = path
-        doc = load_json(path)
-        self.said = doc.get("said") if isinstance(doc.get("said"), dict) else {}
-        stop = doc.get("stop")
+        self.doc = load_json(path)
+        said = self.doc.get("said")
+        self.said = said if isinstance(said, dict) else {}
+        stop = self.doc.get("stop")
         if isinstance(stop, str):
             stop = [stop]
         self.stop = {s for s in stop if isinstance(s, str)} if isinstance(stop, list) else set()
         self.dirty = False
 
     def stopped(self, kind: str) -> bool:
-        return "all" in self.stop or kind in self.stop
+        return kind in STOPPABLE and ("all" in self.stop or kind in self.stop)
 
     def mark(self, key: str) -> None:
         self.said[key] = now()
         self.dirty = True
+
+    def add_stop(self, kind: str) -> None:
+        if kind not in self.stop:
+            self.stop.add(kind)
+            self.dirty = True
 
     def save(self) -> None:
         if not self.dirty:
@@ -187,7 +204,11 @@ def newer_in_line(models: list, current: dict) -> dict | None:
     return best if best is not current else None
 
 
-def version_notice(rec: Record, running: str, cli: dict) -> str:
+def stop_command(delivery: str, kind: str) -> str:
+    return STOP_COMMANDS.get(delivery, STOP_COMMANDS["plugin"]) % kind
+
+
+def version_notice(rec: Record, running: str, cli: dict, delivery: str) -> str:
     latest = cli.get("latest") if isinstance(cli.get("latest"), str) else ""
     have, want = parse_version(running), parse_version(latest)
     if not have or not want or have >= want:
@@ -195,13 +216,14 @@ def version_notice(rec: Record, running: str, cli: dict) -> str:
     key = "version:" + latest
     if key in rec.said:
         return ""
-    text = template("version", latest=latest, running=running)
+    text = template("version", latest=latest, running=running,
+                    stop_command=stop_command(delivery, "version"))
     if text:
         rec.mark(key)
     return text
 
 
-def model_notice(rec: Record, model_id: str, models: list) -> str:
+def model_notice(rec: Record, model_id: str, models: list, delivery: str) -> str:
     current = find_model(models, model_id)
     if not current:
         return ""
@@ -218,6 +240,7 @@ def model_notice(rec: Record, model_id: str, models: list) -> str:
         newer_released=str(newer.get("released", "")),
         newer_for=str(newer.get("for", "the same work")),
         current_name=str(current.get("name", current["id"])),
+        stop_command=stop_command(delivery, "model"),
     )
     if text:
         rec.mark(key)
@@ -234,7 +257,8 @@ def compaction_count(compactions_dir: str, sid: str) -> int:
         return 0
 
 
-def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir: str) -> str:
+def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir: str,
+                 delivery: str) -> str:
     if not sid:
         return ""
     key = "fresh-session:" + sid
@@ -256,7 +280,8 @@ def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir
             reason = "is past %d percent of its context" % int(100 * tokens / window)
     if not reason:
         return ""
-    text = template("fresh-session", reason=reason)
+    text = template("fresh-session", reason=reason,
+                    stop_command=stop_command(delivery, "fresh-session"))
     if text:
         rec.mark(key)
     return text
@@ -270,25 +295,38 @@ def due(opts: dict) -> str:
     models = load_json(opts["models"]).get("models")
     models = models if isinstance(models, list) else []
     kinds = [k for k in opts["kinds"] if k in KINDS and not rec.stopped(k)]
+    delivery = opts.get("delivery") or "plugin"
     sid = hookio.field(doc, "session_id")
     if not SESSION_ID.fullmatch(sid):
         sid = ""
     parts = []
     if "version" in kinds:
-        parts.append(version_notice(rec, newest(opts["running"]), load_json(opts["cli"])))
+        parts.append(version_notice(rec, newest(opts["running"]), load_json(opts["cli"]), delivery))
     if "model" in kinds:
-        parts.append(model_notice(rec, hookio.field(doc, "model"), models))
+        parts.append(model_notice(rec, hookio.field(doc, "model"), models, delivery))
     if "fresh-session" in kinds:
-        parts.append(fresh_notice(rec, doc, sid, models, opts["compactions"]))
+        parts.append(fresh_notice(rec, doc, sid, models, opts["compactions"], delivery))
     rec.save()
     return TOKEN.sub("[token]", "\n\n".join(p for p in parts if p))
 
 
+def stop(state: str, kind: str) -> bool:
+    """Record a stop; False (and a line on stderr) for a kind that is not one."""
+    if kind != "all" and kind not in STOPPABLE:
+        print("notices-stop: unknown kind %r; one of %s or all"
+              % (kind, ", ".join(STOPPABLE)), file=sys.stderr)
+        return False
+    rec = Record(state)
+    rec.add_stop(kind)
+    rec.save()
+    return True
+
+
 def parse(argv: list) -> dict | None:
     opts = {"input": "", "state": "", "models": "", "cli": "", "compactions": "", "root": "",
-            "running": [], "kinds": list(KINDS)}
+            "delivery": "", "running": [], "kinds": list(KINDS)}
     names = {"--input": "input", "--state": "state", "--models": "models", "--cli": "cli",
-             "--compactions": "compactions", "--root": "root"}
+             "--compactions": "compactions", "--root": "root", "--delivery": "delivery"}
     i = 0
     while i + 1 < len(argv):
         a, v = argv[i], argv[i + 1]
@@ -312,17 +350,21 @@ def main(argv: list) -> int:
         if v:
             print(v)
         return 0
+    if len(argv) == 3 and argv[0] == "stop":
+        stop(argv[1], argv[2])
+        return 0
     if argv and argv[0] == "due":
         opts = parse(argv[1:])
         if opts is None:
             print("usage: notices.py due --input F --state F --models F --cli F --compactions DIR"
-                  " [--root DIR] [--running-version V]... [--kinds a,b]", file=sys.stderr)
+                  " [--root DIR] [--running-version V]... [--delivery D] [--kinds a,b]",
+                  file=sys.stderr)
             return 0
         text = due(opts)
         if text:
             print(text)
         return 0
-    print("usage: notices.py running-version INPUT | due ...", file=sys.stderr)
+    print("usage: notices.py running-version INPUT | stop STATE KIND | due ...", file=sys.stderr)
     return 0
 
 

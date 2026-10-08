@@ -33,7 +33,7 @@ if command -v claude >/dev/null 2>&1; then
 fi
 
 text=$(python3 "$BBD_CHECKOUT/lib/notices.py" due \
-  --input "$BBD_INPUT" --root "$BBD_PROJECT_ROOT" \
+  --input "$BBD_INPUT" --root "$BBD_PROJECT_ROOT" --delivery "$BBD_DELIVERY" \
   --state "$BBD_BASE/state/notices.json" \
   --models "$BBD_CHECKOUT/data/models.json" \
   --cli "$BBD_CHECKOUT/data/claude-code.json" \

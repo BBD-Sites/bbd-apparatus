@@ -42,6 +42,7 @@ rules=""
 # threshold; recorded as said for this session by notices.py itself.
 advice=$(python3 "$BBD_CHECKOUT/lib/notices.py" due \
   --input "$BBD_INPUT" --root "$BBD_PROJECT_ROOT" --kinds fresh-session \
+  --delivery "$BBD_DELIVERY" \
   --state "$BBD_BASE/state/notices.json" \
   --models "$BBD_CHECKOUT/data/models.json" \
   --cli "$BBD_CHECKOUT/data/claude-code.json" \

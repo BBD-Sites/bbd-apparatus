@@ -77,6 +77,18 @@ lines += [{"type": "assistant", "sessionId": sid, "text": "x" * 1000} for _ in r
 lines.append({"type": "user", "version": new, "sessionId": sid})
 print("\n".join(json.dumps(l) for l in lines))' "$@" >"$tmp/transcripts/$1.jsonl"
 }
+# stops HOME: the stop list in notices.json, space-separated.
+stops() {
+  python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+print(" ".join(sorted(d.get("stop",[]))))' "$1/.claude/bbd-apparatus/state/notices.json" 2>/dev/null
+}
+# skill NAME HOME SKILL-NAME: one skill run from the plugin's stub, as the Bash tool
+# would run it from the project directory.
+skill() {
+  h_launch "$1" "$2" CLAUDE_PROJECT_DIR="$repo" -- "$boot" skill "$3" plugin </dev/null
+}
 ctx() {
   local out
   out=$(h_run_out "$1")
@@ -265,5 +277,30 @@ git -C "$repo" checkout -q -- RULES.md
 h_assert_empty "$(net_beyond_bootstrap)" "no run made a remote git call beyond the bootstrap's fetch"
 h_assert_empty "$(grep -n -i -E 'urllib|http\.client|requests|curl |wget |registry\.npmjs|socket\.' \
   "$root/launcher/events/session-start.sh" "$root/lib/notices.py" 2>/dev/null)" "the step's code holds no network client"
+
+# 11. The stop writer. The notices-stop skill, run as the notice text tells the model
+# to run it, records a stop for one kind; the next session omits that kind and keeps
+# the others; an unknown kind is refused with exit 0 and a log line and changes
+# nothing; "all" silences every notice.
+home=$(newhome writer)
+start w0 "$home" s-w0 startup claude-opus-5-5 "2.0.0 (Claude Code)"
+if has "$(ctx w0)" 'bbd-launch.sh" skill notices-stop-version'; then h_ok "a notice tells the model the stop command for its kind"; else h_fail "a notice does not name its stop command"; fi
+skill sk-model "$home" notices-stop-model
+h_assert_eq "$(h_run_code sk-model)" 0 "the stop skill: exits 0"
+if has "$(h_run_out sk-model)" "off"; then h_ok "the stop skill: says that model notices are off"; else h_fail "the stop skill: printed no confirmation"; fi
+h_assert_eq "$(stops "$home")" "model" "the stop skill: the stop is recorded"
+start w1 "$home" s-w1 startup claude-opus-5 "2.0.0 (Claude Code)"
+c=$(ctx w1)
+if has "$c" "$newest_opus"; then h_fail "after the stop: the model notice was said"; else h_ok "after the stop: no model notice"; fi
+skill sk-weather "$home" notices-stop-weather
+h_assert_eq "$(h_run_code sk-weather)" 0 "an unknown kind: exits 0"
+h_assert_empty "$(h_run_out sk-weather)" "an unknown kind: prints nothing"
+if grep -q "notices-stop" "$home/.claude/bbd-apparatus/state/launcher.log" 2>/dev/null; then h_ok "an unknown kind: refused in the log"; else h_fail "an unknown kind: no log line"; fi
+h_assert_eq "$(stops "$home")" "model" "an unknown kind: the record is unchanged"
+home=$(newhome writer-all)
+skill sk-all "$home" notices-stop-all
+h_assert_eq "$(stops "$home")" "all" "a stop on all: recorded"
+start w-all "$home" s-wa startup claude-opus-5 "2.0.0 (Claude Code)"
+h_assert_empty "$(h_run_out w-all)" "a stop on all: nothing is said"
 
 h_done
