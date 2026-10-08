@@ -9,7 +9,7 @@ section 12).
   notices.py due --input <input-file> --state <notices.json> --models <models.json>
                  --cli <claude-code.json> --compactions <dir> [--root <project root>]
                  [--running-version <x.y.z>]... [--delivery plugin|repo]
-                 [--kinds version,model,fresh-session]
+                 [--kinds version,model,fresh-session,ship]
       Prints the text of every notice that is due, and records each one as said.
       Nothing is printed when nothing is due. --running-version may be given more
       than once (the transcript's and the CLI's); the newest wins.
@@ -18,15 +18,18 @@ section 12).
       Records that the person does not want that kind of notice again. An unknown
       kind is refused: exit 0, a line on stderr, nothing written.
 
-Three notices, each said once per account home:
+Four notices, each said once per account home:
   version        a newer Claude Code than the one running; once per newer version
   model          a newer model in the same line as the one in use; once per newer model
   fresh-session  the session has compacted FRESH_COMPACTIONS times, or its context is
                  past FRESH_CONTEXT share of the model's window; once per session
+  ship           a notice the ship step left under `pending` (lib/ship.py): a refused
+                 key, a held-back or lost session; once per key
 
-A stop is honoured: `stop` in notices.json names kinds (or "all"), and a marker whose
-`notices` is false turns every notice off. No network is used here; the data files
-are updated by pull request. Exits 0 always.
+A stop is honoured for the first three: `stop` in notices.json names kinds (or "all"),
+and a marker whose `notices` is false turns every notice off. A ship notice reports
+a loss, not a suggestion, so a stop does not cover it; only the marker does. No
+network is used here; the data files are updated by pull request. Exits 0 always.
 """
 from __future__ import annotations
 
@@ -47,7 +50,7 @@ import hookio  # noqa: E402
 FRESH_COMPACTIONS = 3
 FRESH_CONTEXT = 0.60
 
-KINDS = ("version", "model", "fresh-session")
+KINDS = ("version", "model", "fresh-session", "ship")
 STOPPABLE = ("version", "model", "fresh-session")
 TOKEN = re.compile(r"bbdt_[A-Za-z0-9]{40}")
 VERSION = re.compile(r"^\s*v?(\d+\.\d+\.\d+)(?![\w.-])")
@@ -60,6 +63,7 @@ TEXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "text"
 # was upgraded mid-way carries two builds, the older first, so the LAST field is the
 # one that is true now, and the tail is where it is.
 TAIL_LIMIT = 262144
+PENDING_TEXT_LIMIT = 1000
 
 STOP_COMMANDS = {
     "plugin": 'bash "${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh" skill notices-stop-%s',
@@ -132,13 +136,17 @@ def template(name: str, **fields: str) -> str:
 
 
 class Record:
-    """notices.json: what was said, and any stop the tenant asked for."""
+    """notices.json: what was said, what the ship step left pending, and any stop the
+    tenant asked for. Keys this code does not know are kept as they are, so a writer
+    on the other side of the file (lib/ship.py) loses nothing when this one saves."""
 
     def __init__(self, path: str):
         self.path = path
         self.doc = load_json(path)
         said = self.doc.get("said")
         self.said = said if isinstance(said, dict) else {}
+        pending = self.doc.get("pending")
+        self.pending = pending if isinstance(pending, dict) else {}
         stop = self.doc.get("stop")
         if isinstance(stop, str):
             stop = [stop]
@@ -157,10 +165,25 @@ class Record:
             self.stop.add(kind)
             self.dirty = True
 
+    def take_pending(self) -> list:
+        """Every pending notice, oldest first, each removed from pending as it is taken."""
+        items = []
+        for key in sorted(self.pending, key=lambda k: str(self.pending[k].get("at", ""))
+                          if isinstance(self.pending[k], dict) else ""):
+            entry = self.pending[key]
+            text = entry.get("text") if isinstance(entry, dict) else entry
+            if isinstance(text, str) and text.strip():
+                items.append((key, " ".join(text.split())[:PENDING_TEXT_LIMIT]))
+        for key, _ in items:
+            del self.pending[key]
+            self.dirty = True
+        return items
+
     def save(self) -> None:
         if not self.dirty:
             return
-        doc = {"schema": 1, "said": self.said, "stop": sorted(self.stop)}
+        doc = dict(self.doc)
+        doc.update({"schema": 1, "said": self.said, "stop": sorted(self.stop), "pending": self.pending})
         d = os.path.dirname(self.path) or "."
         os.makedirs(d, mode=0o700, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".notices.", dir=d)
@@ -287,6 +310,18 @@ def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir
     return text
 
 
+def ship_notices(rec: Record) -> str:
+    parts = []
+    for key, text in rec.take_pending():
+        if key in rec.said:
+            continue
+        filled = template("ship", text=text)
+        if filled:
+            rec.mark(key)
+            parts.append(filled)
+    return "\n\n".join(parts)
+
+
 def due(opts: dict) -> str:
     doc = hookio.load(opts["input"])
     if not marker_allows(opts.get("root", "")):
@@ -300,6 +335,8 @@ def due(opts: dict) -> str:
     if not SESSION_ID.fullmatch(sid):
         sid = ""
     parts = []
+    if "ship" in kinds:
+        parts.append(ship_notices(rec))
     if "version" in kinds:
         parts.append(version_notice(rec, newest(opts["running"]), load_json(opts["cli"]), delivery))
     if "model" in kinds:

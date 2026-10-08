@@ -38,10 +38,10 @@ fi
 rules=""
 [ -n "${BBD_RULES:-}" ] && rules=$BBD_PROJECT_ROOT/$BBD_RULES
 
-# The fresh-session advice, if this compaction is the one that reaches the
-# threshold; recorded as said for this session by notices.py itself.
+# What the ship step left pending, and the fresh-session advice if this compaction
+# is the one that reaches the threshold; each recorded as said by notices.py itself.
 advice=$(python3 "$BBD_CHECKOUT/lib/notices.py" due \
-  --input "$BBD_INPUT" --root "$BBD_PROJECT_ROOT" --kinds fresh-session \
+  --input "$BBD_INPUT" --root "$BBD_PROJECT_ROOT" --kinds ship,fresh-session \
   --delivery "$BBD_DELIVERY" \
   --state "$BBD_BASE/state/notices.json" \
   --models "$BBD_CHECKOUT/data/models.json" \

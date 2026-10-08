@@ -84,6 +84,23 @@ try: d=json.load(open(sys.argv[1]))
 except Exception: sys.exit(0)
 print(" ".join(sorted(d.get("stop",[]))))' "$1/.claude/bbd-apparatus/state/notices.json" 2>/dev/null
 }
+# pending HOME: the pending keys in notices.json, one per line.
+pending() {
+  python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+print("\n".join(sorted(d.get("pending",{}))))' "$1/.claude/bbd-apparatus/state/notices.json" 2>/dev/null
+}
+# plant_pending HOME KEY TEXT: a notice as the ship step leaves it.
+plant_pending() {
+  mkdir -p "$1/.claude/bbd-apparatus/state"
+  python3 -c 'import json,os,sys
+p=sys.argv[1]
+try: d=json.load(open(p))
+except Exception: d={"schema": 1, "said": {}, "stop": []}
+d.setdefault("pending", {})[sys.argv[2]]={"text": sys.argv[3], "at": "2026-10-07T00:00:00Z"}
+json.dump(d, open(p, "w"))' "$1/.claude/bbd-apparatus/state/notices.json" "$2" "$3"
+}
 # skill NAME HOME SKILL-NAME: one skill run from the plugin's stub, as the Bash tool
 # would run it from the project directory.
 skill() {
@@ -302,5 +319,30 @@ skill sk-all "$home" notices-stop-all
 h_assert_eq "$(stops "$home")" "all" "a stop on all: recorded"
 start w-all "$home" s-wa startup claude-opus-5 "2.0.0 (Claude Code)"
 h_assert_empty "$(h_run_out w-all)" "a stop on all: nothing is said"
+
+# 12. A notice the ship step left pending (lib/ship.py writes it under `pending`) is
+# said once at the next session start or compaction, as one plain sentence, and moved
+# to `said`; nothing else in the record is disturbed, and a stop does not silence it,
+# because it reports a loss, not a suggestion.
+home=$(newhome pending)
+plant_pending "$home" "quarantine:s-q" "One session was held back on this machine because something secret-shaped survived redaction."
+start pend "$home" s-p1 startup "$newest_opus" "$latest_cli (Claude Code)"
+h_assert_hook_run pend "a pending ship notice"
+if has "$(ctx pend)" "held back on this machine"; then h_ok "a pending ship notice: said at session start"; else h_fail "a pending ship notice: not said"; fi
+h_assert_empty "$(pending "$home")" "a pending ship notice: moved out of pending"
+if has "$(said "$home")" "quarantine:s-q"; then h_ok "a pending ship notice: recorded as said"; else h_fail "a pending ship notice: not recorded as said"; fi
+start pend2 "$home" s-p2 startup "$newest_opus" "$latest_cli (Claude Code)"
+h_assert_empty "$(h_run_out pend2)" "a pending ship notice: not said again"
+plant_pending "$home" "loss:s-l" "One earlier session could not be saved: its transcript was gone from this machine before it could be sent."
+start pend-compact "$home" s-p3 compact "$newest_opus" "$latest_cli (Claude Code)"
+c=$(ctx pend-compact)
+if has "$c" "could not be saved" && has "$c" "compacted"; then h_ok "a pending ship notice: folded into a compaction's object"; else h_fail "a pending ship notice: not said on compaction"; fi
+h_assert_empty "$(pending "$home")" "a pending ship notice on compaction: moved out of pending"
+home=$(newhome pending-stopped)
+skill sk-all2 "$home" notices-stop-all
+plant_pending "$home" "token-refused" "The store refused this machine's key, so new sessions are kept here and not sent."
+start pend-stop "$home" s-p4 startup "$newest_opus" "$latest_cli (Claude Code)"
+if has "$(ctx pend-stop)" "refused this machine's key"; then h_ok "a pending ship notice is said despite a stop on all"; else h_fail "a stop on all silenced a loss notice"; fi
+h_assert_eq "$(stops "$home")" "all" "a pending ship notice: the stop list is preserved through the read"
 
 h_done

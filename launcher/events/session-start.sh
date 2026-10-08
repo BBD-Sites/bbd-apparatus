@@ -4,8 +4,9 @@
 # (launcher/events/compact.sh) and its one JSON object is this event's output; it
 # folds the fresh-session advice in itself, because the dispatcher passes on exactly
 # one object. On every other source (startup, resume, clear, fork) lib/notices.py
-# decides which notices are due, records them as said, and this prints them as one
-# SessionStart object, or nothing. No rules are injected here: the next prompt
+# decides which notices are due (what the ship step left pending, a newer Claude
+# Code, a newer model, fresh-session advice), records them as said, and this prints
+# them as one SessionStart object, or nothing. No rules are injected here: the next prompt
 # brings them. No network call is made here: the data compared against
 # (data/models.json, data/claude-code.json) arrives with the checkout.
 # shellcheck source=../lib/common.sh
