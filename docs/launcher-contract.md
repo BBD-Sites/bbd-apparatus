@@ -91,9 +91,15 @@ Mac has none.
    head before it is checked out, and on the checkout before it runs. An unsigned or
    badly signed head is refused, and the last verified checkout
    (`state/verified-<channel>`) runs; with none, the run behaves as if there were no
-   checkout. With no file anywhere, heads are not verified; that is the state until the
-   maintainers' signing keys ship with the plugin. One push to `stable` runs on every
-   tenant's next turn, so once the keys ship, a head no maintainer key signed is not run.
+   checkout. The file ships with every delivery: `plugin/allowed_signers` in the plugin
+   (shell version 3 and later), `.claude/allowed_signers` in the tenant repository
+   template beside the committed copy, and `CFG/bbd-apparatus/allowed_signers`, which the
+   installer writes from the published file and refuses to install without. Each is the
+   maintainers' public key under the neutral principal, and `docs/channels.md` says how
+   every head pushed to a channel is signed by it. One push to `stable` runs on every
+   tenant's next turn; this is what keeps that push the key holder's alone. With no file
+   anywhere (a plugin older than version 3 on a home the installer has not written),
+   heads are not verified until the plugin updates.
 6. **Hand-off.** Run the checkout's `launcher/dispatch.sh` as a child, with the event,
    the delivery and the saved stdin as a file:
    `dispatch.sh <event> <delivery> <input-file> [skill name]`. It is a child, not an

@@ -6,7 +6,7 @@ the shipper that moves a redacted transcript to the tenant's own store; the thin
 shell and the marketplace that deliver the launcher; and the one-command installer.
 
 Two channels: `stable` (every tenant) and `next` (the maintainers' own tenant first).
-Promotion is a merge from `next` to `stable`.
+Promotion is a fast-forward of `next`'s head to `stable` (`docs/channels.md`).
 
 This repository is public and read-only to every machine that runs it. By rule it carries
 no secret, no token and no name of any person or business, and a test refuses a commit that
@@ -26,13 +26,19 @@ claude plugin marketplace add BBD-Sites/bbd-apparatus
 claude plugin install bbd@bbd-apparatus --scope user
 ```
 
+The plugin carries the maintainers' public key (`plugin/allowed_signers`), and the
+launcher runs no channel head that key did not sign (`docs/channels.md`). Nothing installs
+while no signers file exists: the one-command installer, the next change, writes the same
+file to the account's config (`<config>/bbd-apparatus/allowed_signers`) and refuses to
+install when it has none to write.
+
 The plugin is the same on both channels; which channel a session runs comes from the
 tenant's config and the repository's marker, not from the plugin. A tenant repository
-carries `templates/tenant-repo/` as committed: the same bootstrap under `.claude/hooks/`,
-settings that run it on every event and register this marketplace with auto-update on,
-the `/read-draft` stub for a cloud session, and the vault marker, whose tenant
-provisioning fills. The one-command installer that does all of this for every account
-home on a machine is the next change.
+carries `templates/tenant-repo/` as committed: the same bootstrap under `.claude/hooks/`
+with the signers file beside it, settings that run it on every event and register this
+marketplace with auto-update on, the `/read-draft` stub for a cloud session, and the
+vault marker, whose tenant provisioning fills. The one-command installer that does all of
+this for every account home on a machine is the next change.
 
 ## Tests
 
