@@ -185,6 +185,10 @@ Everything lives under `CFG/bbd-apparatus/`, mode 0700, one per account home.
 ```
 CFG/bbd-apparatus/
   tenant.env                 0600; the token and settings, written only by the installer
+  allowed_signers            the published signers file, copied by the installer (section 3,
+                             step 5); the installer refuses to install while it has none to copy
+  excluded-homes             read by the installer only, from the config of the login that
+                             runs it: homes it must never touch, one absolute path per line
   checkout-<channel>/        the apparatus checkout the launcher runs
   queue/<session_id>.json    a pointer record
   quarantine/<session_id>.md rendered copies the post-scan refused; never sent
