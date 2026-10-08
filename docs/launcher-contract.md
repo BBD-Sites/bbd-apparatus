@@ -74,11 +74,21 @@ Mac has none.
    - On a failed or slow fetch, the last checkout runs.
    - With no checkout at all and a failed clone: the Stop ship event appends a pointer
      record to the queue and exits 0; every other event exits 0 silently.
-5. **Signed heads (optional).** When the plugin carries an `allowed_signers` file,
-   `git -c gpg.ssh.allowedSignersFile=<file> verify-commit HEAD` must pass, or the
-   checkout returns to the last verified commit. One push to `stable` runs on every
-   tenant's next turn, so a head that no maintainer key signed is not run.
-6. **Hand-off.** `exec` the checkout's `launcher/dispatch.sh` with the saved stdin.
+5. **Signed heads (optional).** Required only where `tenant.env` sets
+   `BBD_REQUIRE_SIGNED_HEAD=1`; the default is off until the maintainers' signing keys
+   exist. When required, `git -c gpg.ssh.allowedSignersFile=<file> verify-commit HEAD`
+   must pass, with the `allowed_signers` file beside the plugin's launcher directory or
+   at `CFG/bbd-apparatus/allowed_signers`, or the checkout returns to the last
+   verified commit (`state/verified-<channel>`); with none, the run behaves as if
+   there were no checkout. One push to `stable` runs on every tenant's next turn, so a
+   head that no maintainer key signed is not run.
+6. **Hand-off.** `exec` the checkout's `launcher/dispatch.sh` with the event, the
+   delivery and the saved stdin as a file:
+   `dispatch.sh <event> <delivery> <input-file> [skill name]`. The dispatcher removes
+   the file when the event is done.
+
+A session that sets `BBD_NESTED` (the reader step starts one for itself) exits 0
+before any of this, so its hooks neither recurse nor ship the reader's own session.
 
 ## 4. The vault marker
 
