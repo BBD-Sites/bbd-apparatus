@@ -56,9 +56,21 @@ print(json.dumps({"type": "assistant", "timestamp": "2026-01-05T10:10:00.000Z", 
 }
 
 # ship NAME SESSION [VAR=value ...]: one Stop ship turn of SESSION, from the plugin.
+# The first ship run after which the store stopped taking connections, recorded once,
+# so a failure on a CI runner names the case that took the store down.
+store_lost=""
+store_listens() {
+  python3 -c 'import socket,sys; s=socket.create_connection(("127.0.0.1", int(sys.argv[1])), 2); s.close()' \
+    "$(cat "$store/port")" 2>/dev/null
+}
 ship() {
   local name=$1 sid=$2
   shift 2
+  if [ -z "$store_lost" ] && ! store_listens; then
+    store_lost="before $name"
+    echo "diagnostic: the stand-in store stopped listening before the run named $name"
+    ps -o pid=,ppid=,stat=,command= -p "$store_pid" 2>/dev/null | sed 's/^/diagnostic: store process: /'
+  fi
   h_hook_json Stop cwd="$repo" session_id="$sid" transcript_path="$H_TMP/transcripts/$sid.jsonl" \
     | h_launch "$name" "$home" "$@" -- "$boot" stop-ship plugin
 }
@@ -337,6 +349,7 @@ else h_ok "a failing self-test is not cached"; fi
 # When anything failed, say whether the stand-in store was still alive and what it
 # printed, so a failure on a CI runner can be told apart from a store that died.
 if [ "$H_FAILS" -gt 0 ]; then
+  ps -o pid=,ppid=,stat=,command= -p "$store_pid" 2>/dev/null | sed 's/^/diagnostic: store process at the end: /'
   if kill -0 "$store_pid" 2>/dev/null; then echo "diagnostic: the stand-in store was still running"
   else echo "diagnostic: the stand-in store had exited"; fi
   tail -n 20 "$store.stderr" 2>/dev/null | sed 's/^/diagnostic: store: /'
