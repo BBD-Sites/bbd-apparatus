@@ -48,7 +48,7 @@ in the settings is $token and it was not the cause. Nothing is yours to do.
 Done.
 EOF
 }
-for n in 1 2 3 4 5 6 7 8 9; do draft "$n" >"$tmp/long-$n.md"; done
+for n in 1 2 3 4 5 6 7 8 9 10 11 12 13; do draft "$n" >"$tmp/long-$n.md"; done
 printf 'Done. The form sends again; nothing is yours to do.\n' >"$tmp/short.md"
 
 # The reader's canned answers, in the shape the prompt asks for.
@@ -214,19 +214,27 @@ h_assert_empty "$(h_run_out short)" "a short reply: nothing on stdout"
 h_assert_eq "$(reads)" 0 "a short reply: the reader did not run"
 h_assert_empty "$(receipt "$tmp/short.md" status)" "a short reply: no receipt"
 
-# 8. No rules file in the repository: the step stands down.
+# 8. No rules file in the repository (the marker names RULES.md and none is committed,
+# which is every new tenant's state): the reply is still read, against the reply
+# contract alone, with the rules part given as "(none)".
 repo2=$(h_fake_repo vault2)
 h_mark "$repo2" tenant-a
 h_calls_reset claude
 h_hook_json Stop cwd="$repo2" session_id=s5 prompt_id=p6 stop_reason=end_turn \
     last_assistant_message="$(cat "$tmp/long-6.md")" \
-  | h_launch norules "$home" H_FAKE_CLAUDE_STDOUT_FILE="$tmp/fix.txt" -- "$boot" stop-gate plugin
+  | h_launch norules "$home" H_FAKE_CLAUDE_STDOUT_FILE="$tmp/send.txt" H_FAKE_CLAUDE_RECORD="$tmp/rec-norules" -- "$boot" stop-gate plugin
 h_assert_hook_run norules "no rules file"
-h_assert_empty "$(h_run_out norules)" "no rules file: nothing on stdout"
-h_assert_eq "$(reads)" 0 "no rules file: the reader did not run"
-if grep -q "no rules file to read against" "$logf"; then h_ok "no rules file: the log says why"; else h_fail "no rules file: the log does not say why"; fi
+h_assert_empty "$(h_run_out norules)" "no rules file: nothing on stdout for a send verdict"
+h_assert_eq "$(reads)" 1 "no rules file: the reader still ran"
+h_assert_eq "$(receipt "$tmp/long-6.md" status)" read "no rules file: the receipt records a read"
+given=$(cat "$tmp"/rec-norules/stdin.* 2>/dev/null)
+if has "$given" "Start with the answer"; then h_ok "no rules file: the reader was given the reply contract"; else h_fail "no rules file: the reader was not given the reply contract"; fi
+if has "$given" "RULE-ALPHA"; then h_fail "no rules file: another repository's rules reached the reader"; else h_ok "no rules file: no rules reached the reader"; fi
+case "$given" in *"THE PERSON'S RULES"*"(none)"*"THE ASKS"*) h_ok "no rules file: the rules part reads (none)" ;; *) h_fail "no rules file: the rules part does not read (none)" ;; esac
+rm -f "$receipts/$(python3 "$(h_repo_root)/lib/receipt.py" hash "$tmp/long-6.md").json"
 
-# 9. No claude on PATH: the reply goes through at once, and the receipt says unread.
+# 9. No claude on PATH on a desktop home: the reply goes through at once, and the
+# receipt says unread.
 nobin="$tmp/bin-noclaude"
 mkdir -p "$nobin"
 ln -s "$tmp/bin/git" "$nobin/git"
@@ -245,6 +253,34 @@ h_assert_empty "$(h_run_out absent)" "no claude on PATH: nothing on stdout"
 h_assert_eq "$(receipt "$tmp/long-6.md" status)" no-claude "no claude on PATH: the receipt says so"
 h_assert_eq "$(receipt "$tmp/long-6.md" verdict)" send "no claude on PATH: the verdict is send"
 if [ "$(h_run_secs absent)" -lt 10 ]; then h_ok "no claude on PATH: the turn was not held"; else h_fail "no claude on PATH: took $(h_run_secs absent)s"; fi
+
+# 9b. The same, in a cloud session: the reader cannot run there, so the turn is held
+# once with the assembled prompt and the instruction to dispatch the reader through
+# the Agent tool; the receipt says handed-back; the second pass goes through; a new
+# turn is handed back again.
+h_calls_reset claude
+stop remote s10 p11 "$tmp/long-10.md" -- CLAUDE_CODE_REMOTE=true PATH="$nobin:$rest"
+h_assert_hook_run remote "cloud, no claude"
+h_assert_eq "$(decision remote)" block "cloud, no claude: the decision is block"
+r=$(reason remote)
+if has "$r" "Agent tool"; then h_ok "cloud, no claude: the reason says to dispatch the reader through the Agent tool"; else h_fail "cloud, no claude: the reason does not name the Agent tool"; fi
+if has "$r" "You are a reader, not an editor"; then h_ok "cloud, no claude: the reason carries the assembled prompt"; else h_fail "cloud, no claude: the reason lacks the prompt"; fi
+if has "$r" "The form sends again"; then h_ok "cloud, no claude: the prompt carries the draft"; else h_fail "cloud, no claude: the prompt lacks the draft"; fi
+if has "$r" "Start with the answer"; then h_ok "cloud, no claude: the prompt carries the reply contract"; else h_fail "cloud, no claude: the prompt lacks the reply contract"; fi
+if has "$r" "RULE-ALPHA"; then h_ok "cloud, no claude: the prompt carries the rules"; else h_fail "cloud, no claude: the prompt lacks the rules"; fi
+if has "$r" "corrected reply"; then h_ok "cloud, no claude: the reason asks for the corrected reply"; else h_fail "cloud, no claude: the reason does not ask for the corrected reply"; fi
+if has "$r" "$body"; then h_fail "cloud, no claude: the token reached the reason"; else h_ok "cloud, no claude: the token never reached the reason"; fi
+h_assert_eq "$(receipt "$tmp/long-10.md" status)" handed-back "cloud, no claude: the receipt says handed-back"
+h_assert_eq "$(receipt "$tmp/long-10.md" blocked)" 1 "cloud, no claude: the receipt records the block"
+stop remote2 s10 p11 "$tmp/long-11.md" stop_hook_active=true -- CLAUDE_CODE_REMOTE=true PATH="$nobin:$rest"
+h_assert_hook_run remote2 "cloud, second pass"
+h_assert_empty "$(h_run_out remote2)" "cloud, second pass: nothing on stdout"
+stop remote3 s10 p11 "$tmp/long-12.md" -- CLAUDE_CODE_REMOTE=true PATH="$nobin:$rest"
+h_assert_hook_run remote3 "cloud, same turn without the flag"
+h_assert_empty "$(h_run_out remote3)" "cloud, same turn without the flag: the loop guard lets it through"
+h_assert_eq "$(receipt "$tmp/long-12.md" status)" no-claude "cloud, same turn without the flag: the receipt says no-claude, not handed-back"
+stop remote4 s10 p12 "$tmp/long-13.md" -- CLAUDE_CODE_REMOTE=true PATH="$nobin:$rest"
+h_assert_eq "$(decision remote4)" block "cloud, a new turn: handed back again"
 
 # 10. A slow reader is killed at the bound and the reply goes through.
 stop slow s7 p8 "$tmp/long-7.md" -- H_FAKE_CLAUDE_SLEEP=30 H_FAKE_CLAUDE_STDOUT_FILE="$tmp/fix.txt" BBD_READER_BOUND=3
