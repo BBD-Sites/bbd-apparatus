@@ -1,0 +1,107 @@
+name: suite
+
+# Answers one question for a caller with no merge queue: did this exact
+# commit tree already pass this same workflow in full on an earlier run.
+# Lets a push-to-main run skip work its own pull_request run already
+# proved, instead of running every check twice per merge.
+#
+# No secret read: only the ambient per-job github.token and the caller's
+# own public commit objects and run history. No top-level permissions
+# block: declaring one here broke every cross-repository call of this
+# file at startup (zero jobs created); the caller's own job grants what
+# it needs instead (contents: read, actions: read, beside uses:).
+#
+# Touches none of a caller's own steps. It only reports skip or not, and
+# which commit tree its answer covers, so the caller's own job can name
+# that tree on the marker artifact it publishes when done.
+
+on:
+  workflow_call:
+    inputs:
+      lookback:
+        description: "How many of the calling workflow's successful runs to search for a matching tree."
+        required: false
+        type: number
+        default: 40
+    outputs:
+      tree:
+        description: "This commit's tree hash (git rev-parse HEAD^{tree}). The caller names its marker artifact full-suite-<tree> with this value."
+        value: ${{ jobs.already_green.outputs.tree }}
+      skip:
+        description: "'true' only on a push event, only when an earlier run of the SAME calling workflow already published a full-suite-<tree> marker for this exact tree. Always 'false' on every other event, so a pull_request or merge_group run is never skipped -- one of them is always the full run this gate exists to avoid repeating."
+        value: ${{ jobs.already_green.outputs.skip }}
+
+jobs:
+  already_green:
+    runs-on: ubuntu-latest
+    outputs:
+      tree: ${{ steps.check.outputs.tree }}
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: resolving an earlier run's tree needs that commit
+          # object, not just this one.
+          fetch-depth: 0
+
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOOKBACK: ${{ inputs.lookback }}
+        run: |
+          set -uo pipefail
+          tree=$(git rev-parse HEAD^{tree})
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+          echo "this tree: ${tree}"
+
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "non-push event (${{ github.event_name }}); this is a full-run event, never skipped"
+            exit 0
+          fi
+
+          repo="${{ github.repository }}"
+          # github.workflow, read from inside this called workflow, is the
+          # name of the CALLING workflow (GitHub's documented behaviour), so
+          # this looks up the run history of the repository's own suite,
+          # never this file's.
+          wf="${{ github.workflow }}"
+          wf_id=$(gh api "repos/${repo}/actions/workflows" \
+            --jq ".workflows[] | select(.name==\"${wf}\") | .id" 2>/dev/null | head -1)
+          if [ -z "${wf_id}" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "could not resolve workflow '${wf}' by name on ${repo}; running in full"
+            exit 0
+          fi
+
+          runs=$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=${LOOKBACK}&status=success" \
+            --jq '.workflow_runs[] | .head_sha + " " + (.id|tostring)' 2>/dev/null) || true
+          if [ -z "${runs}" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "no successful run history found for workflow id ${wf_id}; running in full"
+            exit 0
+          fi
+
+          found=""
+          while read -r sha id; do
+            [ -n "${sha}" ] || continue
+            [ "${id}" = "${{ github.run_id }}" ] && continue
+            other_tree=$(git rev-parse "${sha}^{tree}" 2>/dev/null) || continue
+            [ "${other_tree}" = "${tree}" ] || continue
+            marker=$(gh api "repos/${repo}/actions/runs/${id}/artifacts" \
+              --jq ".artifacts[]? | select(.name==\"full-suite-${tree}\") | .name" 2>/dev/null) || continue
+            if [ "${marker}" = "full-suite-${tree}" ]; then
+              echo "run ${id} (${sha}) already covered this tree (${tree}) in full and passed"
+              found="${id}"
+              break
+            fi
+          done <<EOF
+          ${runs}
+          EOF
+
+          if [ -n "${found}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "no earlier green run of ${repo}'s '${wf}' has this tree; running in full"
+          fi
