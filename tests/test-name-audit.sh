@@ -102,6 +102,8 @@ audit_static() {
   if git -C "$repo" log --format='%an%n%cn%n%B' HEAD 2>/dev/null | grep -q -i -F -e "$FORMER_OWNER"; then
     echo "the former owner named in commit metadata"
   fi
+  git -C "$repo" ls-files 2>/dev/null | grep -i -F -e "$FORMER_OWNER" \
+    | sed 's/^/the former owner named in the path /' || true
   git -C "$repo" grep -n -o -I -E -e "$OWNER_RE" -- . 2>/dev/null \
     | awk -F: -v ok="$ALLOWED_OWNER" '{ o = $NF; sub(/^.*[\/:]/, "", o); if ($0 !~ ("[/:]" ok "$")) print "GitHub owner other than " ok " in " $1 ":" $2 }' || true
 }
@@ -204,6 +206,15 @@ self_check() {
   out=$(audit_static "$old")
   case "$out" in *"former owner named in commit metadata"*) h_ok "self-check: the former owner in a commit message is caught" ;;
     *) h_fail "self-check: the former owner in a commit message was missed" ;; esac
+  # A tracked path carrying the former owner's name is caught too, even when
+  # every file's contents are clean.
+  mkdir -p "$old/docs"
+  printf 'clean\n' >"$old/docs/moved-from-$(printf '%s' "$FORMER_OWNER" | tr '[:upper:]' '[:lower:]').md"
+  h_git -C "$old" add docs
+  h_git -C "$old" commit -q -m "docs: a clean file"
+  out=$(audit_static "$old")
+  case "$out" in *"the former owner named in the path docs/moved-from-"*) h_ok "self-check: the former owner in a tracked path is caught" ;;
+    *) h_fail "self-check: the former owner in a tracked path was missed" ;; esac
 }
 
 self_check
