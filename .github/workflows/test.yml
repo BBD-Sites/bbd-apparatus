@@ -33,6 +33,11 @@ jobs:
           command -v shellcheck >/dev/null || brew install shellcheck
           git ls-files -z '*.sh' | xargs -0 shellcheck
 
+      - name: claude CLI, for claude plugin validate
+        # Validation is local and needs no login; the manifest test fails in CI when
+        # the CLI is missing, so this step cannot be dropped without the suite saying so.
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: tests
         env:
           # The deny-list lives only in this secret; the name audit fails closed
