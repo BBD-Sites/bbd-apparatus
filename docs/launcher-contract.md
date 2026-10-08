@@ -195,7 +195,8 @@ CFG/bbd-apparatus/
 
 A queue record is a pointer, not a copy:
 `{session_id, transcript_path, where, first_seen, attempts}`, and, when the checkout
-writes it, `project_root`, `repo` (git's common directory, shared by every worktree
+writes it, `queued_at` (when this turn was queued, in nanoseconds; a retry count
+keeps it), `project_root`, `repo` (git's common directory, shared by every worktree
 of one repository) and `tenant` (the vault marker's). The bootstrap, which runs with
 no checkout, writes the first five only; for such a record the repository is read
 from the transcript's own working directory. It holds no transcript text, so nothing
@@ -231,8 +232,19 @@ anything off the machine. In order:
 1. **Queue.** Write or refresh this session's pointer record first, so nothing that
    follows can lose the turn.
 2. **Lock.** One ship step at a time per home (`state/ship.lock`); two draining one
-   queue would send a session twice. A run that finds the lock held leaves its
-   pointer for the holder or the next turn.
+   queue would send a session twice. A run that finds the lock held waits up to 5
+   seconds for it, so a Stop that lands at the tail of another run still sends its
+   own turn. If the holder is still busy after that, the run leaves; its pointer is
+   already queued.
+   - The holder never lets go of the lock without looking again. After its first
+     pass, and for up to three more passes, it ships the turns queued after the last
+     pass began, newest first. These are turns whose own Stop found the lock held:
+     a later turn of a session it was sending, or another session. Without this, a
+     session's last turn would wait for a Stop that may never come.
+   - A rescan stops when nothing new arrived, or when no entry's render and
+     post-scan would fit inside the 90-second budget. Only a turn queued in the last
+     seconds before the 120-second kill can still wait for the next Stop in this
+     home.
 3. **Self-test.** `apparatus selftest` runs once per checkout commit, and a pass is
    cached as `state/selftest-<sha>.ok`, which holds the sha256 of the redactor it
    proved, so a redactor edited in place is tested again. A failure sends nothing,

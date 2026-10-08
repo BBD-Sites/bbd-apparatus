@@ -147,8 +147,8 @@ sleep 1
 h_hook_json Stop cwd="$repo" session_id=sid-x transcript_path=/x/b.jsonl | h_launch ship-2 "$home" -- "$boot" stop-ship plugin
 h_assert_hook_run ship-2 "stop-ship from the checkout"
 h_assert_eq "$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])))))' "$base/queue/sid-x.json")" \
-  "attempts first_seen project_root repo session_id tenant transcript_path where" \
-  "the checkout's pointer has the bootstrap's five fields, plus the project, repository and tenant"
+  "attempts first_seen project_root queued_at repo session_id tenant transcript_path where" \
+  "the checkout's pointer has the bootstrap's five fields, plus when it was queued, the project, repository and tenant"
 h_assert_eq "$(h_json_field project_root <"$base/queue/sid-x.json")" "$repo" "the checkout's pointer names the project it fired for"
 h_assert_eq "$(h_json_field tenant <"$base/queue/sid-x.json")" "tenant-a" "the checkout's pointer names the marker's tenant"
 h_assert_eq "$(h_json_field transcript_path <"$base/queue/sid-x.json")" "/x/b.jsonl" "a later turn points at the latest transcript"

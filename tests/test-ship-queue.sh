@@ -349,6 +349,41 @@ if queued other1; then h_ok "another tenant's entry stays queued"; else h_fail "
 if paths | grep -qx /v1/captures/s11; then h_ok "this tenant's session is still posted"; else h_fail "this tenant's session was not posted"; fi
 rm -f "$queue/other1.json"
 
+# 11d. Stops that land while another ship step holds the lock. The first Stop's post
+# is held by the store for 8 seconds; meanwhile the same session ends a second turn,
+# and another session ends too. Both find the lock held. Neither turn may wait for
+# some later Stop: the last turn of a session may have no later Stop at all.
+forget_requests
+printf '/v1/captures/lk1 8\n' >"$store/slow"
+transcript lk1 >/dev/null
+start=$(date +%s)
+( ship lock-holder lk1 ) &
+holder=$!
+for _ in $(seq 1 100); do paths | grep -qx /v1/captures/lk1 && break; sleep 0.1; done
+rm -f "$store/slow"
+transcript lk1 "TURN-TWO of the same session" >/dev/null
+transcript lk2 >/dev/null
+ship lock-second-turn lk1 &
+second=$!
+ship lock-other-session lk2 &
+other=$!
+wait "$second" "$other" "$holder"
+took=$(($(date +%s) - start))
+h_assert_hook_run lock-second-turn "a Stop that finds the lock held"
+h_assert_hook_run lock-other-session "another session's Stop that finds the lock held"
+if python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    if r["path"] == "/v1/captures/lk1" and "TURN-TWO" in r["body"]: sys.exit(0)
+sys.exit(1)' "$store/requests.jsonl"; then h_ok "the lock held: the session's second turn reached the store"
+else h_fail "the lock held: the session's second turn never reached the store"; fi
+if paths | grep -qx /v1/captures/lk2; then h_ok "the lock held: the other session reached the store"
+else h_fail "the lock held: the other session never reached the store"; fi
+if queued lk1 || queued lk2; then h_fail "the lock held: a turn is still queued ($(cd "$queue" && printf '%s ' lk*.json))"
+else h_ok "the lock held: nothing is left queued"; fi
+if [ "$took" -le 60 ]; then h_ok "the lock held: every turn was sent inside the bound (${took}s)"
+else h_fail "the lock held: sending took ${took}s"; fi
+
 # 12. A failing redactor self-test blocks every post and keeps the queue: nothing
 # leaves the machine on a redactor that cannot prove itself.
 h_apparatus_file lib/redact.py "$(cat "$src/lib/redact.py")

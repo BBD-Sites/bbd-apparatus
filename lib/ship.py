@@ -6,8 +6,9 @@ each step it takes is one subcommand here, so every step can be tested alone.
 
   ship.py queue-pointer <queue> <input-file> <where> [<project> <tenant>]
                                                        print the session id queued
-  ship.py drain-list <queue> <current> <max> [<project> <tenant>]
+  ship.py drain-list <queue> <current> <max> [<project> <tenant>] [--since <ns>]
                                                        the ids to ship this firing
+  ship.py now-ns                                       the clock, for --since
   ship.py post-timeout                                 seconds one post may take
   ship.py get <queue> <sid> <field>                    one field of a pointer
   ship.py stamp <queue> <sid>                          which write of a pointer this is
@@ -163,6 +164,11 @@ def queue_pointer(queue: str, hook: dict, where: str, project: str = "", tenant:
         "first_seen": old.get("first_seen") or now(),
         "attempts": attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0,
     }
+    # When this turn was queued, in nanoseconds. A ship step that already holds the
+    # lock looks again before it lets go, for pointers queued after it began (a later
+    # turn, or another session, whose own Stop found the lock held). A retry count
+    # rewrites the file but keeps this, so a failed send is not taken for a new turn.
+    record["queued_at"] = time.time_ns()
     if project:
         record["project_root"] = project
         record["repo"] = repo_id(project)
@@ -172,7 +178,7 @@ def queue_pointer(queue: str, hook: dict, where: str, project: str = "", tenant:
 
 
 def drain_list(queue: str, current: str, limit: int, repo: str | None = None,
-               tenant: str | None = None) -> list:
+               tenant: str | None = None, since: int | None = None) -> list:
     """The queued sessions to try this firing: the firing session first, then the
     `limit` oldest by first seen (then by name, so the order is stable). The firing
     session goes first so that old entries that keep failing, or a store that hangs
@@ -183,7 +189,11 @@ def drain_list(queue: str, current: str, limit: int, repo: str | None = None,
     With `repo` (the captures door), only entries queued for that repository, and
     under `tenant` where one was recorded, are listed: the captures door writes into
     the firing session's own repository, so another project's entry stays queued for
-    that project's own next Stop. Entries that do not match never take a slot."""
+    that project's own next Stop. Entries that do not match never take a slot.
+
+    With `since`, only entries queued after that moment are listed, newest first:
+    the turns that arrived while this ship step held the lock. The newest goes first
+    for the same reason the firing session does."""
     entries = []
     for name in os.listdir(queue):
         sid = name[:-5] if name.endswith(".json") else ""
@@ -196,6 +206,12 @@ def drain_list(queue: str, current: str, limit: int, repo: str | None = None,
             rec_tenant = rec.get("tenant")
             if isinstance(rec_tenant, str) and rec_tenant and rec_tenant != tenant:
                 continue
+        if since is not None:
+            at = rec.get("queued_at")
+            if not isinstance(at, int) or isinstance(at, bool) or at <= since:
+                continue
+            entries.append((-at, sid))
+            continue
         entries.append((str(rec.get("first_seen") or ""), sid))
     out = [sid for _, sid in sorted(entries)[:limit]]
     if valid_sid(current) and os.path.isfile(os.path.join(queue, current + ".json")):
@@ -530,10 +546,17 @@ def main(argv: list) -> int:
             sid = queue_pointer(queue, hook, where, project, tenant)
             if sid:
                 print(sid)
-    elif cmd == "drain-list" and len(args) in (3, 5):
-        repo, tenant = (repo_id(args[3]), args[4]) if len(args) == 5 else (None, None)
-        for sid in drain_list(args[0], args[1], int(args[2]), repo, tenant):
-            print(sid)
+    elif cmd == "drain-list" and len(args) in (3, 5, 7):
+        since = None
+        if len(args) >= 5 and args[-2] == "--since":
+            since = int(args[-1])
+            args = args[:-2]
+        if len(args) in (3, 5):
+            repo, tenant = (repo_id(args[3]), args[4]) if len(args) == 5 else (None, None)
+            for sid in drain_list(args[0], args[1], int(args[2]), repo, tenant, since):
+                print(sid)
+    elif cmd == "now-ns" and not args:
+        print(time.time_ns())
     elif cmd == "post-timeout" and not args:
         print(POST_TIMEOUT)
     elif cmd == "get" and len(args) == 3 and valid_sid(args[1]):
