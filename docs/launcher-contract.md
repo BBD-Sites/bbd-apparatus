@@ -154,6 +154,10 @@ In every case the turn ends normally and the transcript ships later or is queued
 | Redactor self-test fails for this checkout | Nothing leaves the machine; the queue is kept. The session is not affected. |
 | Post-scan finds a secret after redaction | Do not ship; move the rendered copy to the local quarantine; record a notice for the next session start. |
 | Store refuses the token (401 or 403) | Keep the queue; record a notice once. |
+| Store not connected (a token, no ingest address) | Render and post-scan anyway; send nothing; keep the queue; record `store-not-connected`. |
+| Store down, slow or unreachable | Keep the entry; it is tried again next turn. |
+| Repository remote unreachable (captures branch) | Keep the entry; it is tried again next turn. |
+| A queued transcript is gone from disk | Drop the entry; record a loss notice once. |
 
 ## 7. Timeouts
 
@@ -176,11 +180,14 @@ CFG/bbd-apparatus/
   tenant.env                 0600; the token and settings, written only by the installer
   checkout-<channel>/        the apparatus checkout the launcher runs
   queue/<session_id>.json    a pointer record
-  quarantine/                rendered copies the post-scan refused
+  quarantine/<session_id>.md rendered copies the post-scan refused; never sent
   state/
     ledger/<session_id>.md   the session's ask ledger
-    notices.json             notices already said, and any stop the tenant asked for
+    notices.json             notices to say, notices already said, and any stop the tenant asked for
     selftest-<sha>.ok        a passed redactor self-test for that checkout
+    ship-status.json         how the last ship step ended, and how many entries wait
+    ship.lock/               held while a ship step drains the queue
+    outbox/                  a rendered copy while it is being sent; emptied by every run
     fetch.stamp              when the last fetch finished
     compactions/<session_id> the session's compaction count
     launcher.log             errors, rotated and redacted
@@ -210,6 +217,86 @@ repository's `captures` branch instead.
   tests here and a redactor rule can recognize one. `tests/test-token-not-tracked.sh`
   fails if that shape appears in any tracked file.
 - The tracked `.mcp.json` in a tenant repository carries the search URL only.
+
+## 10. The ship step
+
+`launcher/events/stop-ship.sh` runs on Stop: asynchronously in the plugin, and
+synchronously in a cloud session's repository copy. It is the only step that sends
+anything off the machine. In order:
+
+1. **Queue.** Write or refresh this session's pointer record first, so nothing that
+   follows can lose the turn.
+2. **Lock.** One ship step at a time per home (`state/ship.lock`); two draining one
+   queue would send a session twice. A run that finds the lock held leaves its
+   pointer for the holder or the next turn.
+3. **Self-test.** `apparatus selftest` runs once per checkout commit, and a pass is
+   cached as `state/selftest-<sha>.ok`, which holds the sha256 of the redactor it
+   proved, so a redactor edited in place is tested again. A failure sends nothing,
+   keeps the whole queue, and records `selftest-failed` and a notice once for that
+   commit.
+4. **Drain.** The five oldest queued sessions by first seen, then this one. Each is
+   rendered with `apparatus render` (redacted before truncation and again over the
+   whole document) into `state/outbox/`, NUL bytes are removed (the post-scan skips a
+   file holding one as binary; removing one can only join text into a longer shape),
+   and the copy is post-scanned. No old session is started after 90 seconds, the
+   firing session is always tried, the whole step is killed at 120 seconds, and every
+   network call has its own bound.
+   - A post-scan hit (exit 1 with the file named) moves the copy to `quarantine/`,
+     records a notice once for that session, drops the entry, and sends nothing. A
+     later turn of the same session is queued and checked again. A post-scan that
+     could not run keeps the entry.
+   - An entry is dropped only if its pointer is the one that was rendered. A later
+     turn that refreshed it while the copy was in flight keeps it queued, so that
+     turn is sent on the next firing.
+   - A queued session whose transcript is gone is dropped with a loss notice. The
+     session that is firing keeps its pointer even if its transcript is not on disk
+     yet; a later drain decides.
+   - A transcript with nothing to render yet: an old entry is dropped, the firing
+     session's is kept.
+5. **Door.** A `BBD_TOKEN` in `tenant.env` means the HTTP post
+   (`docs/ingest-contract.md`); with no `BBD_INGEST_URL` the store is not connected,
+   nothing is sent and every pointer waits. No token (a cloud machine, or a home with
+   no install) means the captures branch below.
+
+Every rendered copy in `state/outbox/` is removed when the step ends, however it
+ends. Notices are recorded in `state/notices.json` under `pending`, keyed so each is
+recorded once: `token-refused`, `too-large:<session>`, `quarantine:<session>`,
+`loss:<session>`, `selftest-failed:<sha>`, `store-not-connected` and
+`ingest-url-refused`. The session-start step says them.
+
+### The captures branch
+
+A home with no token commits the redacted copies to the tenant repository's own
+`captures` branch and pushes it. The ref is a branch because the cloud's git proxy
+refuses a push of anything else. Plumbing only, so the working tree, the index and
+every local branch are left alone:
+
+1. `git fetch --refmap= origin refs/heads/captures`, which writes only FETCH_HEAD and
+   objects. A missing branch is fine; `git ls-remote
+   --exit-code` tells a missing branch from a remote out of reach, which keeps the
+   queue.
+2. `git hash-object -w` each rendered copy; read the fetched tree with `git ls-tree`;
+   replace or add only `captures/<session_id>.md`; write the trees with `git mktree`.
+   Every other file, including other sessions', is carried over.
+3. `git commit-tree` with no parent, holding the full tree, as
+   `apparatus maintainers <apparatus-maintainers@users.noreply.github.com>`.
+4. Push `<commit>:refs/heads/captures` to `origin` with
+   `--force-with-lease=refs/heads/captures:<fetched sha>`, the sha left empty when
+   the branch did not exist.
+5. A lease refused because another session pushed in between is fetched and rebuilt,
+   up to three more times; any other failure keeps the queue.
+
+The tenant's own git config is used for this, because it holds the credentials and
+proxy that reach their remote; their git hooks are not run, no prompt is allowed,
+and no background maintenance is started. After a successful push git records
+`refs/remotes/origin/captures` in the tenant's repository, as any push to a named
+remote does; no local branch is made.
+
+**Unverified:** whether the cloud's git proxy allows a force-with-lease push. Each
+capture commit is parentless, so every push replaces the branch. If the proxy refuses
+that, the fallback is a normal commit whose parent is the fetched head: the proxy
+accepts it, but the branch grows history until the store prunes it. This is checked
+end to end on a provisioned test tenant before it is relied on.
 
 ## 11. The prompt and compact steps
 
