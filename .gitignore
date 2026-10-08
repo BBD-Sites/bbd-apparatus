@@ -1,0 +1,6 @@
+# Scratch from a test run pointed at the repository with H_TMP_ROOT=tests/tmp.
+tests/tmp/
+# Python caches from the ported scripts; they differ per interpreter and leak local paths.
+__pycache__/
+*.pyc
+.DS_Store

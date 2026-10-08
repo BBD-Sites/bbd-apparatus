@@ -1,0 +1,3 @@
+# Lets every test name the harness it sources, relative to the test itself.
+source-path=SCRIPTDIR
+external-sources=true
