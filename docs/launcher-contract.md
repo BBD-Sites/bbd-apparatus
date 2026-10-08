@@ -60,7 +60,10 @@ Mac has none.
 2. **Delivery dedupe.** If the delivery is `repo`, `CLAUDE_CODE_REMOTE` is not `true`,
    and `CFG/bbd-apparatus/tenant.env` exists (only an install that also enabled the
    plugin writes it), exit 0: the plugin copy handles this home. Both copies fire in a
-   desktop session, and without this step every turn would inject and ship twice.
+   desktop session, and without this step every turn would inject and ship twice. A
+   skill is not deduped: it runs once, from the one Bash call that invoked its stub,
+   and on a Mac with the plugin the tenant may invoke the committed stub
+   (`/read-draft`) as readily as the plugin's (`/bbd:read-draft`); both must answer.
 3. **Channel.** `BBD_CHANNEL` from `tenant.env`, else `channel` from the marker, else
    `stable`.
 4. **Fast-forward.**

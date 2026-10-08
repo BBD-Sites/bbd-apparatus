@@ -185,8 +185,9 @@ bbd_gate() {
   if [ -e "$BBD_ENV_FILE" ] && [ "$BBD_ENV_TENANT" != "$BBD_MARKER_TENANT" ]; then
     return 1
   fi
-  # The plugin copy handles a home that has tenant.env, except in the cloud.
-  if [ "$delivery" = repo ] && [ "${CLAUDE_CODE_REMOTE:-}" != true ] && [ -e "$BBD_ENV_FILE" ]; then
+  # The plugin copy handles a home that has tenant.env, except in the cloud, and
+  # except for a skill, which runs once from the one Bash call that invoked its stub.
+  if [ "$delivery" = repo ] && [ "$event" != skill ] && [ "${CLAUDE_CODE_REMOTE:-}" != true ] && [ -e "$BBD_ENV_FILE" ]; then
     return 1
   fi
   BBD_TENANT=$BBD_MARKER_TENANT

@@ -181,8 +181,10 @@ fi
 
 # 2. Delivery dedupe. Only an install that also enabled the plugin writes tenant.env,
 # so on such a home the plugin copy runs and the repository copy stands down; a cloud
-# session has no plugin, so there the repository copy always runs.
-if [ "$delivery" = repo ] && [ "${CLAUDE_CODE_REMOTE:-}" != true ] && [ -e "$env_file" ]; then
+# session has no plugin, so there the repository copy always runs. A skill is not
+# deduped: it runs once, from the one Bash call that invoked its stub, and on a Mac
+# with the plugin the tenant may invoke the committed stub as readily as the plugin's.
+if [ "$delivery" = repo ] && [ "$event" != skill ] && [ "${CLAUDE_CODE_REMOTE:-}" != true ] && [ -e "$env_file" ]; then
   exit 0
 fi
 

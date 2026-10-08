@@ -13,6 +13,7 @@ h_init
 h_fake_bin git
 h_fake_apparatus >/dev/null
 h_plant_event v1 prompt
+h_plant_event v1 skill
 boot=$(h_bootstrap)
 repo_copy="$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh"
 repo=$(h_fake_repo vault)
@@ -42,6 +43,13 @@ h_assert_hook_run dup-plugin "plugin copy on an installed home"
 if queued "$installed" sid-dup; then h_ok "plugin copy on an installed home: it queues the turn"
 else h_fail "plugin copy on an installed home: nothing queued"; fi
 h_assert_eq "$(where_of "$installed" sid-dup)" desktop "plugin copy on a desktop: where is desktop"
+
+# A skill is not deduped: the committed stub is invoked by one Bash call, and on an
+# installed home it must answer as the plugin's stub would.
+h_sentinel_reset
+h_launch dup-skill "$installed" CLAUDE_PROJECT_DIR="$repo" -- "$repo_copy" skill read-draft repo </dev/null
+h_assert_eq "$(h_run_code dup-skill)" 0 "repository copy on an installed home, skill: exits 0"
+h_assert_eq "$(h_sentinel | awk '{print $1, $2}')" "v1 skill" "repository copy on an installed home, skill: the skill event runs"
 
 # The cloud: the repository copy runs, even if a tenant.env were present.
 h_hook_json Stop cwd="$repo" session_id=sid-cloud | h_launch cloud "$installed" CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR="$repo" -- "$repo_copy" stop-ship repo
