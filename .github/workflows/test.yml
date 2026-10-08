@@ -1,0 +1,43 @@
+name: test
+
+on:
+  pull_request:
+    branches: [next, stable]
+  push:
+    branches: [next, stable]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS for the stock Mac a tenant runs (bash 3.2, BSD tools, no jq);
+        # Ubuntu 24.04 for the cloud session machine.
+        os: [macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR head, not the merge commit GitHub synthesizes: that commit carries
+          # GitHub's own identity and would fail the commit-identity audit for a
+          # reason that is not in the change.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Full history, because the name audit reads every commit's metadata.
+          fetch-depth: 0
+
+      - name: shellcheck
+        run: |
+          command -v shellcheck >/dev/null || brew install shellcheck
+          git ls-files -z '*.sh' | xargs -0 shellcheck
+
+      - name: tests
+        env:
+          # The deny-list lives only in this secret; the name audit fails closed
+          # when it is empty, so a missing secret cannot pass silently.
+          NAME_DENYLIST: ${{ secrets.NAME_DENYLIST }}
+        run: |
+          # /bin/bash on macOS is 3.2, the version a tenant's Mac runs.
+          if [ -x /bin/bash ]; then /bin/bash tests/run.sh; else bash tests/run.sh; fi
