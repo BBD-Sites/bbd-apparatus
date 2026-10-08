@@ -4,7 +4,7 @@
 # (docs/launcher-contract.md section 10). In order:
 #   1. queue a pointer to this session's transcript, so nothing below can lose it;
 #   2. prove the redactor, once per checkout: a failed self-test sends nothing;
-#   3. for the oldest queued sessions (at most 5) and this one: render (which
+#   3. for this session first, then the oldest queued ones (at most 5): render (which
 #      redacts, twice), then post-scan the rendered copy; a hit is quarantined and
 #      never sent;
 #   4. choose the door: a token means the HTTP post to the store (or, with no store
@@ -25,11 +25,17 @@ env_file=$BBD_BASE/tenant.env
 lock=$state/ship.lock
 DRAIN_MAX=5
 # The plugin runs this step asynchronously with no harness timeout, so it keeps its
-# own: the whole step is killed after SHIP_BOUND seconds, no new session is started
-# after SHIP_BUDGET, and every network call inside has its own shorter bound. A kill
-# loses nothing: every queue write is an atomic rename, and the pointers wait.
+# own: the whole step is killed after SHIP_BOUND seconds. The firing session is
+# always rendered and sent first. An old entry is rendered only if its render and
+# post-scan bounds both fit before SHIP_BUDGET, and posted only if the post's own
+# timeout fits before SHIP_BOUND with a margin, so no old entry's work is ever cut
+# off by the kill, and none can push the firing session past it. A kill loses
+# nothing: every queue write is an atomic rename, and the pointers wait.
 SHIP_BOUND=120
 SHIP_BUDGET=90
+SHIP_MARGIN=5
+RENDER_BOUND=30
+SCAN_BOUND=15
 
 ship() { python3 "$ship_py" "$@"; }
 
@@ -50,7 +56,7 @@ trap 'exit 0' INT TERM HUP
 
 # shellcheck disable=SC2329  # run through bbd_bounded below
 ship_step() {
-  local sha ok_file redactor_sha sid transcript out rc hit stamp result i ready=() stamps=() args=()
+  local sha ok_file redactor_sha sid transcript out rc hit stamp result i post_timeout ready=() stamps=() args=()
   # 2. The self-test, once per checkout commit. The pass file also holds the sha256
   # of the redactor it proved, so a redactor edited in place after the pass is tested
   # again. A checkout that is not a repository has no commit to key on, so it is
@@ -77,8 +83,9 @@ ship_step() {
 
   # 3. Render and post-scan each session to try.
   for sid in $(ship drain-list "$queue" "$current" "$DRAIN_MAX"); do
-    # The budget holds back old entries only: the firing session is always tried.
-    if [ "$SECONDS" -ge "$SHIP_BUDGET" ] && [ "$sid" != "$current" ]; then
+    # The budget holds back old entries only: the firing session is always tried,
+    # and comes first.
+    if [ "$sid" != "$current" ] && [ $((SECONDS + RENDER_BOUND + SCAN_BOUND)) -gt "$SHIP_BUDGET" ]; then
       bbd_log "stop-ship: out of time; the rest wait for the next turn"
       break
     fi
@@ -93,7 +100,7 @@ ship_step() {
       continue
     fi
     out=$outbox/$sid.md
-    if bbd_bounded 30 python3 "$apparatus" render "$transcript" >"$out"; then rc=0; else rc=$?; fi
+    if bbd_bounded "$RENDER_BOUND" python3 "$apparatus" render "$transcript" >"$out"; then rc=0; else rc=$?; fi
     if [ "$rc" -eq 3 ]; then
       # Nothing to render yet. The firing session may still gain turns; an old one
       # never will.
@@ -115,7 +122,7 @@ ship_step() {
     fi
     # A hit exits 1 and prints the file's name; a crash also exits 1 but prints
     # nothing on stdout, and is kept for the next turn rather than taken for a hit.
-    if hit=$(bbd_bounded 15 python3 "$apparatus" postscan --quarantine "$quarantine" "$out"); then rc=0; else rc=$?; fi
+    if hit=$(bbd_bounded "$SCAN_BOUND" python3 "$apparatus" postscan --quarantine "$quarantine" "$out"); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ] && [ -n "$hit" ]; then
       # A secret shape survived redaction. The copy is in quarantine for the tenant to
       # look at, and the session is not sent; a later turn of it is checked again.
@@ -139,9 +146,19 @@ ship_step() {
   case "$(ship door "$env_file")" in
     post)
       result=shipped
+      post_timeout=$(ship post-timeout)
+      case "$post_timeout" in ''|*[!0-9]*) post_timeout=20 ;; esac
       i=0
       while [ "$i" -lt "${#ready[@]}" ]; do
         sid=${ready[$i]}
+        # The firing session is first and always posted; an old entry's post starts
+        # only if it can finish before the step is killed.
+        if [ "$sid" != "$current" ] \
+            && [ $((SECONDS + post_timeout + SHIP_MARGIN)) -gt "$SHIP_BOUND" ]; then
+          bbd_log "stop-ship: out of time to post; the rest wait for the next turn"
+          result=kept
+          break
+        fi
         [ "$(ship post "$env_file" "$state" "$queue" "$sid" "${stamps[$i]}" "$outbox/$sid.md" \
           "$BBD_CHECKOUT/lib/redact.py")" = stored ] || result=kept
         i=$((i + 1))

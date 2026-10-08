@@ -6,6 +6,7 @@ each step it takes is one subcommand here, so every step can be tested alone.
 
   ship.py queue-pointer <queue> <input-file> <where>   print the session id queued
   ship.py drain-list <queue> <current> <max>           the ids to ship this firing
+  ship.py post-timeout                                 seconds one post may take
   ship.py get <queue> <sid> <field>                    one field of a pointer
   ship.py stamp <queue> <sid>                          which write of a pointer this is
   ship.py drop <queue> <sid> [<stamp>]
@@ -114,9 +115,12 @@ def queue_pointer(queue: str, hook: dict, where: str) -> str | None:
 
 
 def drain_list(queue: str, current: str, limit: int) -> list:
-    """The queued sessions to try this firing: the `limit` oldest by first seen (then
-    by name, so the order is stable), and the firing session last. A cap keeps one
-    firing short after a long time offline; the rest wait for the next turn."""
+    """The queued sessions to try this firing: the firing session first, then the
+    `limit` oldest by first seen (then by name, so the order is stable). The firing
+    session goes first so that old entries that keep failing, or a store that hangs
+    on them, can never use up the step's time before the turn that just ended is
+    sent. A cap keeps one firing short after a long time offline; the rest wait for
+    the next turn."""
     entries = []
     for name in os.listdir(queue):
         sid = name[:-5] if name.endswith(".json") else ""
@@ -126,7 +130,7 @@ def drain_list(queue: str, current: str, limit: int) -> list:
         entries.append((str(first or ""), sid))
     out = [sid for _, sid in sorted(entries)[:limit]]
     if valid_sid(current) and os.path.isfile(os.path.join(queue, current + ".json")):
-        out.append(current)
+        out.insert(0, current)
     return out
 
 
@@ -447,6 +451,8 @@ def main(argv: list) -> int:
     elif cmd == "drain-list" and len(args) == 3:
         for sid in drain_list(args[0], args[1], int(args[2])):
             print(sid)
+    elif cmd == "post-timeout" and not args:
+        print(POST_TIMEOUT)
     elif cmd == "get" and len(args) == 3 and valid_sid(args[1]):
         value = read_json(os.path.join(args[0], args[1] + ".json")).get(args[2])
         if isinstance(value, str):

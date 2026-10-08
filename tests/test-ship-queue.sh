@@ -255,7 +255,8 @@ if queued nofile; then h_ok "the firing session keeps its pointer while its tran
 else h_fail "the firing session's pointer was dropped"; fi
 rm -f "$queue/nofile.json"
 
-# 11. At most five queued entries per firing, oldest first, then the firing session.
+# 11. At most five queued entries per firing: the firing session first, then the five
+# oldest.
 # Oldest means first seen: the entries are written so that their names and the order
 # they were created in both run the other way, and neither can pass for it.
 forget_requests
@@ -268,14 +269,52 @@ for n in 1 2 3 4 5 6 7; do
 done
 transcript s6 >/dev/null
 ship drain-cap s6
-h_assert_eq "$(paths | tr '\n' ' ')" "/v1/captures/old7 /v1/captures/old6 /v1/captures/old5 /v1/captures/old4 /v1/captures/old3 /v1/captures/s6 " \
-  "a firing drains the five first seen, oldest first, then its own session"
+h_assert_eq "$(paths | tr '\n' ' ')" "/v1/captures/s6 /v1/captures/old7 /v1/captures/old6 /v1/captures/old5 /v1/captures/old4 /v1/captures/old3 " \
+  "a firing sends its own session, then drains the five first seen, oldest first"
 h_assert_eq "$(cd "$queue" && printf '%s\n' *.json | sort | tr '\n' ' ')" "old1.json old2.json " "the newer entries wait for the next firing"
 h_assert_eq "$(python3 -c 'import json,sys
 for l in open(sys.argv[1]):
     r = json.loads(l)
     if r["path"].endswith("/old7"): print({k.lower(): v for k, v in r["headers"].items()}["x-capture-where"])' "$store/requests.jsonl")" \
   "cloud" "a drained entry is sent with where its own session ran"
+
+# 11b. A store that hangs on the old entries: the firing session is posted first, and
+# reaches the store long before the step's 120-second bound, whatever the old ones
+# do; the old ones are kept, and no post is started that could not finish inside the
+# bound. Five old ready entries each hang past the post timeout.
+# They were first seen before the two entries left by case 11, so they are the
+# five oldest.
+forget_requests
+for n in 1 2 3 4 5; do
+  transcript "hang$n" >/dev/null
+  python3 -c 'import json,sys; json.dump({"session_id": sys.argv[1], "transcript_path": sys.argv[2], "where": "desktop",
+    "first_seen": "2026-01-0%sT00:00:00Z" % sys.argv[3], "attempts": 0}, open(sys.argv[4], "w"))' \
+    "hang$n" "$H_TMP/transcripts/hang$n.jsonl" "$n" "$queue/hang$n.json"
+done
+printf '/v1/captures/hang 25\n' >"$store/slow"
+transcript s10 >/dev/null
+start=$(date +%s)
+( ship hanging-store s10 ) &
+job=$!
+reached=""
+while kill -0 "$job" 2>/dev/null; do
+  if [ -z "$reached" ] && paths | grep -qx /v1/captures/s10; then reached=$(($(date +%s) - start)); fi
+  sleep 0.5
+done
+wait "$job"
+[ -n "$reached" ] || { paths | grep -qx /v1/captures/s10 && reached=$(($(date +%s) - start)); }
+total=$(($(date +%s) - start))
+rm -f "$store/slow"
+h_assert_hook_run hanging-store "a store that hangs on the old entries"
+h_assert_eq "$(paths | head -n 1)" "/v1/captures/s10" "a hanging store: the firing session is posted first"
+if [ -n "$reached" ] && [ "$reached" -le 30 ]; then h_ok "a hanging store: the firing session reached the store in ${reached}s"
+else h_fail "a hanging store: the firing session reached the store late or never (${reached:-never})"; fi
+if queued s10; then h_fail "a hanging store: the firing session is still queued"; else h_ok "a hanging store: the firing session is stored and dropped"; fi
+h_assert_eq "$(cd "$queue" && printf '%s\n' hang*.json | sort | tr '\n' ' ')" "hang1.json hang2.json hang3.json hang4.json hang5.json " \
+  "a hanging store: the old entries are kept"
+if [ "$total" -le 125 ]; then h_ok "a hanging store: the step ended inside its bound (${total}s)"
+else h_fail "a hanging store: the step ran ${total}s"; fi
+rm -f "$queue"/hang*.json
 
 # 12. A failing redactor self-test blocks every post and keeps the queue: nothing
 # leaves the machine on a redactor that cannot prove itself.

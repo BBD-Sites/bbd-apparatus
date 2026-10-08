@@ -198,9 +198,9 @@ A queue record is a pointer, not a copy:
 text, so nothing unredacted is duplicated; redaction runs when the queue is drained, and
 one record per session always points at the latest transcript.
 
-Every Stop ship drains the queue first, oldest first, at most 5 records per firing. If a
-record's transcript is gone when it is drained, that loss is recorded as a notice. A
-cloud session's state lives in its machine and is lost when the machine is reclaimed, so
+Every Stop ship sends its own session first, then drains up to 5 older records,
+oldest first. If a record's transcript is gone when it is drained, that loss is
+recorded as a notice. A cloud session's state lives in its machine and is lost when the machine is reclaimed, so
 the cloud path does not depend on the queue: it commits the redacted copy to the
 repository's `captures` branch instead.
 
@@ -234,13 +234,17 @@ anything off the machine. In order:
    proved, so a redactor edited in place is tested again. A failure sends nothing,
    keeps the whole queue, and records `selftest-failed` and a notice once for that
    commit.
-4. **Drain.** The five oldest queued sessions by first seen, then this one. Each is
+4. **Drain.** This session first, then the five oldest queued sessions by first
+   seen. Each is
    rendered with `apparatus render` (redacted before truncation and again over the
    whole document) into `state/outbox/`, NUL bytes are removed (the post-scan skips a
    file holding one as binary; removing one can only join text into a longer shape),
-   and the copy is post-scanned. No old session is started after 90 seconds, the
-   firing session is always tried, the whole step is killed at 120 seconds, and every
-   network call has its own bound.
+   and the copy is post-scanned. The whole step is killed at 120 seconds. The firing
+   session is always rendered and posted, and goes first, so old entries that keep
+   failing or a store that hangs on them cannot hold it back. An old entry is
+   rendered only if its render (30 seconds) and post-scan (15 seconds) bounds fit
+   inside 90 seconds, and posted only if the post's 20-second timeout fits inside the
+   120-second bound with 5 seconds to spare; the rest wait for the next turn.
    - A post-scan hit (exit 1 with the file named) moves the copy to `quarantine/`,
      records a notice once for that session, drops the entry, and sends nothing. A
      later turn of the same session is queued and checked again. A post-scan that

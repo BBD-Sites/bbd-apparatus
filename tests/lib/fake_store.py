@@ -7,7 +7,10 @@ records every request it receives and answers with a status the test chooses.
 It listens on a free port and writes that port to DIR/port once it is ready. Every
 request is appended to DIR/requests.jsonl as {method, path, headers, body}, so a test
 can assert exactly what the ship step sent. The answer is read from DIR/status on each
-request (default 201); DIR/delay, if present, is a number of seconds to wait before
+request (default 201); DIR/slow, if present, is "PATH-PREFIX SECONDS": a request
+whose path starts with the prefix is held that long before its answer, so a test
+can make some sessions' posts hang while others are answered at once. DIR/delay,
+if present, is a number of seconds to wait before
 answering, so a test can look at the process list while a post is in flight. A 3xx
 answer carries a Location on this same server, so a test can see whether it is
 followed. DIR/hook, if present, is run once (then removed) while a request is held,
@@ -48,6 +51,9 @@ class Handler(BaseHTTPRequestHandler):
             os.replace(hook, hook + ".ran")
             subprocess.run(["bash", hook + ".ran"], check=False)
         delay = float(read(os.path.join(self.server.dir, "delay"), "0"))
+        slow = read(os.path.join(self.server.dir, "slow"), "").split()
+        if len(slow) == 2 and self.path.startswith(slow[0]):
+            delay = max(delay, float(slow[1]))
         if delay:
             time.sleep(delay)
         status = int(read(os.path.join(self.server.dir, "status"), "201"))
