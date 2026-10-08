@@ -30,3 +30,4 @@ CI, where an empty list fails the run. Merges are rebase only, so every commit k
 neutral author and its committer is either that identity or GitHub's own web-flow
 identity; the audit accepts nothing else. The launcher's contract is
 `docs/launcher-contract.md`.
+What the redactor removes, and its two checks, are in `docs/redaction.md`.
