@@ -54,7 +54,9 @@ chmod 700 "$outbox" "$quarantine" 2>/dev/null
 trap 'rm -f "$outbox"/*.md "$outbox"/*.nul 2>/dev/null; bbd_unlock "$lock"; exit 0' EXIT
 trap 'exit 0' INT TERM HUP
 
-# shellcheck disable=SC2329  # run through bbd_bounded below
+# The function runs only through bbd_bounded below. Older shellcheck (the Ubuntu
+# runner's) calls its body unreachable as SC2317, newer as SC2329.
+# shellcheck disable=SC2317,SC2329
 ship_step() {
   local sha ok_file redactor_sha sid transcript out rc hit stamp result i post_timeout ready=() stamps=() args=()
   # 2. The self-test, once per checkout commit. The pass file also holds the sha256
