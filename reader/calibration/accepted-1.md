@@ -9,4 +9,4 @@ Nothing is yours to do.
 Done.
 
 ---
-Proof: a test message sent through the live form arrived in the inbox, and the old address now answers with an error, so nothing can still be going there.
+Proof: a test message sent through the live form arrived in the inbox; the old address now answers with an error, so nothing can still be going there; the old host's control panel lists no stored messages; the footer was read on each of the six pages.
