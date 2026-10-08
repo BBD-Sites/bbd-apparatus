@@ -49,6 +49,10 @@ Done.
 EOF
 }
 for n in 1 2 3 4 5 6 7 8 9 10 11 12 13; do draft "$n" >"$tmp/long-$n.md"; done
+# Two drafts that each carry one unsourced claim: a world fact stated flat from memory,
+# and an action the session never showed.
+{ draft 14; printf '\nGoogle changed its ranking rules on March 12, 2024, so your listing will recover in about six weeks.\n'; } >"$tmp/claim-date.md"
+{ draft 15; printf '\nI tested the form and it works.\n'; } >"$tmp/claim-tested.md"
 printf 'Done. The form sends again; nothing is yours to do.\n' >"$tmp/short.md"
 
 # The reader's canned answers, in the shape the prompt asks for.
@@ -100,6 +104,13 @@ Everything you asked for is done.
 - ids: none
 EOF
 printf 'I read it and it seems fine to me, nothing to add.\n' >"$tmp/garbage.txt"
+# The reader's answer for each of the two unsourced-claim shapes, in the shape the
+# prompt asks for.
+claims_verdict() { # QUOTED-LINE WHAT
+  printf 'VERDICT: fix\nRESTATE\n- none\nCHAIN\n- none\nTHE PERSON'"'"'S WORDS\n- none\nCLAIMS\n- "%s": %s\nANSWERED\n- none\nOWNER VOICE\n- none\nVALUE\n- 6 sentences or bullets in the body\nREADING\n- none\nCONTRACT\n- none\n' "$1" "$2"
+}
+claims_verdict "Google changed its ranking rules on March 12, 2024, so your listing will recover in about six weeks." "say where this comes from, or drop it" >"$tmp/claims-date.txt"
+claims_verdict "I tested the form and it works." "show what proved this" >"$tmp/claims-tested.txt"
 
 # stop NAME SESSION PROMPT-ID DRAFT-FILE [hook key=value ...] -- [VAR=value ...]: one Stop
 # from the plugin. CLAUDECODE is set as a real session sets it, to see it stripped.
@@ -299,6 +310,29 @@ stop garbage s9 p10 "$tmp/long-9.md" -- H_FAKE_CLAUDE_STDOUT_FILE="$tmp/garbage.
 h_assert_hook_run garbage "a reader out of shape"
 h_assert_empty "$(h_run_out garbage)" "a reader out of shape: nothing on stdout"
 h_assert_eq "$(receipt "$tmp/long-9.md" status)" unparseable "a reader out of shape: the receipt says unparseable"
+
+# 11b. The two unsourced-claim shapes: a world fact stated flat from memory, and an
+# action the session never showed. The reader is told to quote both, and each verdict
+# blocks once with the quoted line and what the writer must do.
+h_calls_reset claude
+stop claim-date s11 p13 "$tmp/claim-date.md" -- H_FAKE_CLAUDE_STDOUT_FILE="$tmp/claims-date.txt" H_FAKE_CLAUDE_RECORD="$tmp/rec-claims"
+h_assert_hook_run claim-date "a flat date from memory"
+h_assert_eq "$(decision claim-date)" block "a flat date from memory: the decision is block"
+r=$(reason claim-date)
+if has "$r" 'CLAIMS: "Google changed its ranking rules on March 12, 2024, so your listing will recover in about six weeks.": say where this comes from, or drop it'; then h_ok "a flat date from memory: the line is quoted back with what to do"; else h_fail "a flat date from memory: the reason lacks the quoted line: $r"; fi
+# The prompt wraps its lines, so it is matched with its whitespace folded.
+given=$(cat "$tmp"/rec-claims/stdin.* 2>/dev/null | tr -s '[:space:]' ' ')
+if has "$given" "say where this comes from, or drop it"; then h_ok "the reader is told to quote a world fact with no named source"; else h_fail "the reader is not told to quote a world fact with no named source"; fi
+if has "$given" "show what proved this"; then h_ok "the reader is told to quote an action or state with nothing beside it"; else h_fail "the reader is not told to quote an action or state with nothing beside it"; fi
+if has "$given" "has its source in the session itself and is never listed"; then h_fail "the reader is still told the assistant's own claims never need a source"; else h_ok "the reader is no longer told the assistant's own claims never need a source"; fi
+stop claim-date2 s11 p13 "$tmp/long-11.md" stop_hook_active=true -- H_FAKE_CLAUDE_STDOUT_FILE="$tmp/claims-date.txt"
+h_assert_empty "$(h_run_out claim-date2)" "a flat date from memory: the second pass goes through"
+stop claim-tested s12 p14 "$tmp/claim-tested.md" -- H_FAKE_CLAUDE_STDOUT_FILE="$tmp/claims-tested.txt"
+h_assert_hook_run claim-tested "an action the session never showed"
+h_assert_eq "$(decision claim-tested)" block "an action the session never showed: the decision is block"
+r=$(reason claim-tested)
+if has "$r" 'CLAIMS: "I tested the form and it works.": show what proved this'; then h_ok "an action the session never showed: the line is quoted back with what to do"; else h_fail "an action the session never showed: the reason lacks the quoted line: $r"; fi
+h_assert_eq "$(receipt "$tmp/claim-tested.md" blocked)" 1 "an action the session never showed: the receipt records the block"
 
 # 12. The token is nowhere: not on any stdout or stderr, not in the state directory.
 if grep -r -q -F "$body" "$tmp/run" "$base/state" 2>/dev/null; then
