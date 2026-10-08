@@ -8,9 +8,8 @@
 #   1. stop_hook_active: this Stop is the second pass of the turn, after a block; the
 #      reply goes through whatever the reader would say.
 #   2. The draft is last_assistant_message. Under 50 prose words there is nothing to
-#      read. With no rules file in the repository (the marker's `rules`, present and
-#      not empty), the reader has nothing of the person's to read against, and the
-#      step stands down.
+#      read. The rules file the marker names is read against when it exists; a
+#      repository with none is read against the reply contract alone.
 #   3. A receipt for this exact draft (lib/receipt.py) means it was read already.
 #   4. The reader runs under a bound (60 seconds; BBD_READER_BOUND overrides, 1 to 600)
 #      with the reply contract, the rules file, the session's open asks and the draft.
@@ -68,11 +67,12 @@ if [ "$words" -lt 50 ]; then
   bbd_log "stop-gate: $words prose words; nothing to read"
   exit 0
 fi
-rules=""
-[ -n "${BBD_RULES:-}" ] && rules=$BBD_PROJECT_ROOT/$BBD_RULES
-if [ -z "$rules" ] || [ ! -s "$rules" ]; then
-  bbd_log "stop-gate: no rules file to read against (${BBD_RULES:-none named}); the reply goes through"
-  exit 0
+# The rules file the marker names, when it exists: a new tenant's repository names
+# one and ships none, and their replies are read all the same, against the reply
+# contract alone (the reader is told the rules are "(none)").
+rules=/nonexistent
+if [ -n "${BBD_RULES:-}" ] && [ -s "$BBD_PROJECT_ROOT/$BBD_RULES" ]; then
+  rules=$BBD_PROJECT_ROOT/$BBD_RULES
 fi
 
 # 3. Read once.
