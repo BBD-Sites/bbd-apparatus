@@ -76,8 +76,12 @@ h_fake_repo() {
 # h_fake_bin NAME: puts a NAME on PATH that appends its arguments, one call per line,
 # to $H_TMP/calls/NAME.log. A fake git then runs the real git, so tests can assert
 # which git calls happened (for example, that no fetch was attempted) without
-# losing git's behaviour. A fake claude prints $H_FAKE_CLAUDE_STDOUT and exits with
-# $H_FAKE_CLAUDE_EXIT (default 0), so tests never reach a real account.
+# losing git's behaviour. A fake claude prints $H_FAKE_CLAUDE_STDOUT (or the file
+# $H_FAKE_CLAUDE_STDOUT_FILE, for a canned multi-line answer) and exits with
+# $H_FAKE_CLAUDE_EXIT (default 0), so tests never reach a real account. It sleeps
+# $H_FAKE_CLAUDE_SLEEP seconds first when that is set (a slow reader), and with
+# $H_FAKE_CLAUDE_RECORD=DIR it saves what it was given on stdin and its environment
+# as DIR/stdin.<pid> and DIR/env.<pid>, so a test can see what reached the reader.
 h_fake_bin() {
   local name=$1 tmp real=""
   tmp=$(h_tmpdir)
@@ -130,7 +134,14 @@ SH
       printf 'exec %q "$@"\n' "$real"
     else
       cat <<'SH'
+if [ -n "${H_FAKE_CLAUDE_RECORD:-}" ]; then
+  mkdir -p "$H_FAKE_CLAUDE_RECORD"
+  if [ ! -t 0 ]; then cat >"$H_FAKE_CLAUDE_RECORD/stdin.$$"; fi
+  env >"$H_FAKE_CLAUDE_RECORD/env.$$"
+fi
+[ -n "${H_FAKE_CLAUDE_SLEEP:-}" ] && sleep "$H_FAKE_CLAUDE_SLEEP"
 [ -n "${H_FAKE_CLAUDE_STDOUT:-}" ] && printf "%s\n" "$H_FAKE_CLAUDE_STDOUT"
+[ -n "${H_FAKE_CLAUDE_STDOUT_FILE:-}" ] && cat "$H_FAKE_CLAUDE_STDOUT_FILE"
 exit "${H_FAKE_CLAUDE_EXIT:-0}"
 SH
     fi
@@ -260,9 +271,10 @@ h_bootstrap() {
 }
 
 # h_fake_apparatus: a stand-in for the public apparatus repository, built from this
-# working copy's launcher/, lib/, bin/, text/ and data/, with branches stable and next on a bare
-# remote at $H_TMP/apparatus.git. Prints the source work tree. It installs the fake
-# git first, because only the fake git sends the launcher's URL to the stand-in.
+# working copy's launcher/, lib/, bin/, text/, data/ and reader/, with branches stable
+# and next on a bare remote at $H_TMP/apparatus.git. Prints the source work tree. It
+# installs the fake git first, because only the fake git sends the launcher's URL to
+# the stand-in.
 h_fake_apparatus() {
   local tmp src bare repo
   h_fake_bin git
@@ -273,7 +285,7 @@ h_fake_apparatus() {
   h_git init -q --bare "$bare"
   h_git init -q "$src"
   git -C "$src" symbolic-ref HEAD refs/heads/stable
-  (cd "$repo" && tar cf - --exclude __pycache__ launcher lib bin text data) | (cd "$src" && tar xf -)
+  (cd "$repo" && tar cf - --exclude __pycache__ launcher lib bin text data reader) | (cd "$src" && tar xf -)
   h_git -C "$src" add -A
   h_git -C "$src" commit -q -m "feat: apparatus"
   git -C "$src" push -q "$bare" stable:stable stable:next
