@@ -290,7 +290,11 @@ def post(env_path: str, state: str, queue: str, sid: str, expect: str, body_path
         code = e.code
     except Exception as e:  # noqa: BLE001 - offline, refused, timeout: all mean "later"
         count_attempt(queue, sid)
-        log("post of %s did not reach the store (%s); kept" % (sid, type(e).__name__))
+        # The reason is an OS or socket message (refused, timed out, no route); it
+        # never holds the request, and log() masks a token shape regardless.
+        reason = getattr(e, "reason", e)
+        log("post of %s did not reach the store (%s: %s); kept"
+            % (sid, type(e).__name__, str(reason)[:200].replace("\n", " ")))
         return "kept"
     if code in (200, 201):
         drop(queue, sid, expect)
