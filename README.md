@@ -14,3 +14,17 @@ does. Behaviour lives here; the plugin's hook entries never change.
 
 All rights reserved. Source is published so that every tenant can read exactly what runs on
 their machine.
+
+## Tests
+
+Plain bash, so they run on a stock Mac (bash 3.2, no jq) and on Linux:
+
+```
+bash tests/run.sh
+shellcheck tests/*.sh tests/lib/*.sh
+```
+
+The name audit reads its deny-list from outside the repository: `$NAME_DENYLIST_FILE`,
+else `~/.config/bbd-apparatus/denylist.txt`, else the `NAME_DENYLIST` Actions secret in
+CI, where an empty list fails the run. The launcher's contract is
+`docs/launcher-contract.md`.
