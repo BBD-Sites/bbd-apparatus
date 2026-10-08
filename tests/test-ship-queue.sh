@@ -28,7 +28,7 @@ token="bbdt""_$body"
 # The stand-in store, stopped when the test exits.
 store="$H_TMP/store"
 mkdir -p "$store"
-python3 "$(h_repo_root)/tests/lib/fake_store.py" "$store" &
+python3 "$(h_repo_root)/tests/lib/fake_store.py" "$store" 2>"$store.stderr" &
 store_pid=$!
 trap 'kill "$store_pid" 2>/dev/null; wait "$store_pid" 2>/dev/null; h_cleanup' EXIT
 for _ in $(seq 1 50); do [ -s "$store/port" ] && break; sleep 0.1; done
@@ -333,5 +333,14 @@ h_assert_eq "$(status)" "selftest-failed" "a failing self-test: the state says s
 bad=$(git -C "$base/checkout-stable" rev-parse HEAD)
 if [ -f "$base/state/selftest-$bad.ok" ]; then h_fail "a failing self-test was cached as a pass"
 else h_ok "a failing self-test is not cached"; fi
+
+# When anything failed, say whether the stand-in store was still alive and what it
+# printed, so a failure on a CI runner can be told apart from a store that died.
+if [ "$H_FAILS" -gt 0 ]; then
+  if kill -0 "$store_pid" 2>/dev/null; then echo "diagnostic: the stand-in store was still running"
+  else echo "diagnostic: the stand-in store had exited"; fi
+  tail -n 20 "$store.stderr" 2>/dev/null | sed 's/^/diagnostic: store: /'
+  tail -n 20 "$base/state/launcher.log" 2>/dev/null | sed 's/^/diagnostic: log: /'
+fi
 
 h_done

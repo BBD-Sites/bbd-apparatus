@@ -23,7 +23,7 @@ import os
 import subprocess
 import sys
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def read(path: str, default: str) -> str:
@@ -35,6 +35,12 @@ def read(path: str, default: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # A client killed halfway through a request (a ship step stopped by its bound)
+    # must not hold the store: each connection gives up after this many seconds,
+    # and each is served on its own thread, so one stuck client never blocks the
+    # next one.
+    timeout = 60
+
     def _answer(self) -> None:
         size = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(size) if size else b""
@@ -72,7 +78,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     directory = sys.argv[1]
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
     server.dir = directory
     tmp = os.path.join(directory, "port.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
