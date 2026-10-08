@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# What fail safe means (docs/launcher-contract.md section 6), one planted failure at
+# a time: offline, a checkout that cannot fast-forward, a fetch slower than its
+# bound, no checkout and no network, a held fetch lock, a corrupt config, a crashing
+# or chattering event, and an unsigned head when signed heads are required. In every
+# case the launcher exits 0 and prints nothing but hook JSON, and the turn's
+# transcript is still queued or the last checkout still runs.
+set -u
+# shellcheck source=lib/harness.sh
+. "$(dirname "$0")/lib/harness.sh"
+h_init
+
+h_fake_bin git
+h_fake_apparatus >/dev/null
+h_plant_event v1 prompt
+boot=$(h_bootstrap)
+home=$(h_fake_home h1)
+repo=$(h_fake_repo vault)
+h_mark "$repo" tenant-a
+base="$home/.claude/bbd-apparatus"
+co="$base/checkout-stable"
+bare="$H_TMP/apparatus.git"
+
+# A file's permission bits, the same on BSD and GNU (whose stat flags differ).
+mode() { python3 -c 'import os,sys; print("%o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
+
+# The next run fetches, whatever the last one did.
+expire_stamp() { rm -f "$base/state/fetch.stamp"; }
+
+prompt() { # NAME [VAR=value ...]
+  local name=$1
+  shift
+  h_hook_json UserPromptSubmit cwd="$repo" | h_launch "$name" "$home" "$@" -- "$boot" prompt plugin
+}
+
+# Online first: the checkout is made and its event runs.
+h_sentinel_reset
+prompt seed
+h_assert_hook_run seed "first run online"
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v1" "first run online: the fetched checkout ran"
+h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$(git -C "$bare" rev-parse stable)" "first run online: the checkout is at the channel head"
+
+# Offline: the fetch fails, the last checkout runs.
+h_plant_event v2 prompt
+expire_stamp
+h_sentinel_reset
+h_calls_reset git
+prompt offline H_FAKE_GIT_FETCH=fail
+h_assert_hook_run offline "offline"
+h_assert_nonempty "$(h_calls git | grep ' fetch ')" "offline: a fetch was attempted"
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v1" "offline: the last checkout ran"
+
+# Back online: the same turn's next event fast-forwards.
+expire_stamp
+h_sentinel_reset
+prompt online
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v2" "online again: the checkout fast-forwarded and the new code ran"
+
+# Drift: a local commit, an edited tracked file and a stray file in the checkout, and
+# a channel head rewritten so it no longer descends from the checkout.
+h_git -C "$co" commit -q --allow-empty -m "local drift"
+printf 'drift\n' >>"$co/launcher/dispatch.sh"
+printf 'stray\n' >"$co/launcher/events/stray.sh"
+src="$H_TMP/apparatus-src"
+h_git -C "$src" commit -q --amend -m "test: rewritten history"
+git -C "$src" push -q -f "$bare" HEAD:refs/heads/stable
+h_plant_event v3 prompt
+expire_stamp
+h_sentinel_reset
+prompt drift
+h_assert_hook_run drift "non-fast-forward checkout"
+h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$(git -C "$bare" rev-parse stable)" "non-fast-forward checkout: reset to the channel head"
+h_assert_empty "$(git -C "$co" status --porcelain)" "non-fast-forward checkout: no edited or stray file survives"
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v3" "non-fast-forward checkout: the channel head's code ran"
+
+# A fetch over the bound is abandoned and the last checkout runs.
+h_plant_event v4 prompt
+expire_stamp
+h_sentinel_reset
+prompt slow H_FAKE_GIT_FETCH=hang H_FAKE_GIT_HANG=20
+h_assert_hook_run slow "fetch over the bound"
+secs=$(h_run_secs slow)
+if [ "$secs" -le 8 ]; then h_ok "fetch over the bound: abandoned after the bound (${secs}s)"
+else h_fail "fetch over the bound: the run took ${secs}s"; fi
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v3" "fetch over the bound: the last checkout ran"
+h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$(git -C "$bare" rev-parse stable~1)" "fetch over the bound: the checkout was not moved"
+
+# One fetch per turn: a run within the stamp window does not fetch.
+expire_stamp
+prompt stamp-a
+h_calls_reset git
+prompt stamp-b
+h_assert_empty "$(h_calls git | grep ' fetch ')" "a second event within the stamp window does not fetch"
+
+# A fetch lock held by a live run is not waited for; a dead holder's is taken over.
+expire_stamp
+mkdir -p "$base/state/fetch.lock"
+date +%s >"$base/state/fetch.lock/at"
+h_calls_reset git
+h_sentinel_reset
+prompt locked
+h_assert_hook_run locked "fetch lock held"
+h_assert_empty "$(h_calls git | grep ' fetch ')" "fetch lock held: no fetch"
+h_assert_nonempty "$(h_sentinel)" "fetch lock held: the last checkout still ran"
+echo $(($(date +%s) - 120)) >"$base/state/fetch.lock/at"
+h_calls_reset git
+prompt stale
+h_assert_nonempty "$(h_calls git | grep ' fetch ')" "a stale fetch lock is taken over"
+if [ -d "$base/state/fetch.lock" ]; then h_fail "the fetch lock was left behind"; else h_ok "the fetch lock is released"; fi
+
+# No checkout and no network: stop-ship queues a pointer, every other event exits 0
+# silently.
+home2=$(h_fake_home h2)
+base2="$home2/.claude/bbd-apparatus"
+for ev in session-start prompt pre-write stop-gate; do
+  rm -f "$base2/state/fetch.stamp"
+  h_sentinel_reset
+  h_hook_json Hook cwd="$repo" session_id="sid-$ev" | h_launch "cold-$ev" "$home2" H_FAKE_GIT_FETCH=fail -- "$boot" "$ev" plugin
+  h_assert_hook_run "cold-$ev" "no checkout, no network, $ev"
+  h_assert_empty "$(h_run_out "cold-$ev")$(h_sentinel)" "no checkout, no network, $ev: silent"
+  if [ -e "$base2/queue/sid-$ev.json" ]; then h_fail "no checkout, no network, $ev: queued a pointer"
+  else h_ok "no checkout, no network, $ev: nothing queued"; fi
+done
+rm -f "$base2/state/fetch.stamp"
+h_hook_json Stop cwd="$repo" session_id=sid-cold transcript_path=/x/sid-cold.jsonl \
+  | h_launch cold-ship "$home2" H_FAKE_GIT_FETCH=fail -- "$boot" stop-ship plugin
+h_assert_hook_run cold-ship "no checkout, no network, stop-ship"
+rec="$base2/queue/sid-cold.json"
+if [ -f "$rec" ]; then
+  h_ok "no checkout, no network, stop-ship: a pointer is queued"
+  h_assert_eq "$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])))))' "$rec")" \
+    "attempts first_seen session_id transcript_path where" "the pointer holds the five fields and nothing else"
+  h_assert_eq "$(h_json_field transcript_path <"$rec")" "/x/sid-cold.jsonl" "the pointer names the transcript"
+  h_assert_eq "$(h_json_field where <"$rec")" "desktop" "the pointer says where the session ran"
+  h_assert_eq "$(mode "$rec")" "600" "the pointer is readable by its owner only"
+else
+  h_fail "no checkout, no network, stop-ship: no pointer queued"
+fi
+h_assert_eq "$(mode "$base2")" "700" "the state root is 0700"
+
+# The checkout's stop-ship writes the same record the bootstrap does, and a second
+# turn of one session refreshes it in place, keeping when it was first seen.
+h_hook_json Stop cwd="$repo" session_id=sid-x transcript_path=/x/a.jsonl | h_launch ship-1 "$home" -- "$boot" stop-ship plugin
+first=$(h_json_field first_seen <"$base/queue/sid-x.json")
+sleep 1
+h_hook_json Stop cwd="$repo" session_id=sid-x transcript_path=/x/b.jsonl | h_launch ship-2 "$home" -- "$boot" stop-ship plugin
+h_assert_hook_run ship-2 "stop-ship from the checkout"
+h_assert_eq "$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])))))' "$base/queue/sid-x.json")" \
+  "attempts first_seen session_id transcript_path where" "the checkout's pointer has the bootstrap's shape"
+h_assert_eq "$(h_json_field transcript_path <"$base/queue/sid-x.json")" "/x/b.jsonl" "a later turn points at the latest transcript"
+h_assert_eq "$(h_json_field first_seen <"$base/queue/sid-x.json")" "$first" "a later turn keeps when the session was first seen"
+h_hook_json Stop cwd="$repo" session_id=../escape | h_launch ship-bad "$home" -- "$boot" stop-ship plugin
+h_assert_hook_run ship-bad "a session id that is a path"
+if [ -e "$base/escape.json" ]; then h_fail "a session id escaped the queue directory"; else h_ok "a session id that is a path writes nothing"; fi
+
+# A corrupt config: binary noise, a line that would run if the file were sourced, and
+# no tenant. The home then matches no tenant, so nothing acts, and nothing executes.
+home3=$(h_fake_home h3)
+mkdir -p "$home3/.claude/bbd-apparatus"
+# shellcheck disable=SC2016  # the lines are meant literally: they must never run
+{ head -c 512 /dev/urandom; printf '\n$(touch %s/pwned)\nBBD_CHANNEL=`touch %s/pwned`\n' "$H_TMP" "$H_TMP"; } \
+  >"$home3/.claude/bbd-apparatus/tenant.env"
+for ev in prompt stop-ship; do
+  h_hook_json Hook cwd="$repo" | h_launch "corrupt-$ev" "$home3" -- "$boot" "$ev" plugin
+  h_assert_hook_run "corrupt-$ev" "corrupt config, $ev"
+done
+if [ -e "$H_TMP/pwned" ]; then h_fail "corrupt config: a line in it executed"; else h_ok "corrupt config: nothing in it executed"; fi
+h_assert_empty "$(ls "$home3/.claude/bbd-apparatus/queue" 2>/dev/null)" "corrupt config: nothing queued"
+# The same lines after a valid tenant: values are text, the channel is refused and
+# falls back to stable, and the turn runs.
+# shellcheck disable=SC2016  # the lines are meant literally: they must never run
+h_tenant_env "$home3" tenant-a 'BBD_CHANNEL=`touch '"$H_TMP"'/pwned`' '$(touch '"$H_TMP"'/pwned)'
+h_sentinel_reset
+h_hook_json Hook cwd="$repo" | h_launch corrupt-valid "$home3" -- "$boot" prompt plugin
+h_assert_hook_run corrupt-valid "config with hostile lines"
+if [ -e "$H_TMP/pwned" ]; then h_fail "hostile config: a line in it executed"; else h_ok "hostile config: nothing in it executed"; fi
+h_assert_nonempty "$(h_sentinel)" "hostile config: the stable checkout ran"
+
+# Corrupt hook input: not JSON, and an empty stdin.
+printf 'not json{' | h_launch bad-input "$home" -- "$boot" stop-ship plugin
+h_assert_hook_run bad-input "hook input that is not JSON"
+h_launch no-input "$home" -- "$boot" prompt plugin </dev/null
+h_assert_hook_run no-input "empty hook input"
+h_hook_json Hook cwd="$repo" | h_launch bad-args "$home" -- "$boot" '../x' plugin
+h_assert_hook_run bad-args "an event name that is a path"
+h_hook_json Hook cwd="$repo" | h_launch unknown "$home" -- "$boot" no-such-event plugin
+h_assert_hook_run unknown "an unknown event"
+
+# A crashing event, and one that prints noise: exit 0, and only hook JSON reaches
+# stdout.
+h_apparatus_file launcher/events/prompt.sh '#!/usr/bin/env bash
+echo "not hook json"
+exit 7'
+h_apparatus_file launcher/events/session-start.sh '#!/usr/bin/env bash
+printf "%s" "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"hello\"}}"'
+h_apparatus_file launcher/events/stop-gate.sh '#!/usr/bin/env bash
+set -e
+false'
+expire_stamp
+for ev in prompt session-start stop-gate; do
+  h_hook_json Hook cwd="$repo" | h_launch "noisy-$ev" "$home" -- "$boot" "$ev" plugin
+  h_assert_hook_run "noisy-$ev" "event $ev that crashes or prints"
+done
+h_assert_empty "$(h_run_out noisy-prompt)" "an event's non-JSON output is dropped"
+h_assert_eq "$(h_run_out noisy-session-start | h_json_field hookSpecificOutput)" \
+  "{'hookEventName': 'SessionStart', 'additionalContext': 'hello'}" "an event's hook JSON is passed through"
+if grep -q 'dropped output' "$base/state/launcher.log" 2>/dev/null; then h_ok "dropped output is logged"
+else h_fail "dropped output was not logged"; fi
+
+# The log never carries the token: common.sh masks its value and its shape.
+body=$(printf 'Q%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)
+token="bbdt""_$body"
+h_tenant_env "$home" tenant-a "BBD_TOKEN=$token"
+(
+  # shellcheck source=../launcher/lib/common.sh
+  . "$(h_repo_root)/launcher/lib/common.sh"
+  HOME=$home
+  unset CLAUDE_CONFIG_DIR
+  bbd_paths
+  bbd_tenant_env "$BBD_ENV_FILE"
+  bbd_log "a message carrying $token and bbdt""_${body}"
+  # The token is parsed into a variable no child can inherit.
+  env | grep -c "$body" || true
+) >"$H_TMP/child-env.txt"
+h_assert_eq "$(cat "$H_TMP/child-env.txt")" "0" "the token is not exported to child processes"
+if grep -q "$body" "$base/state/launcher.log"; then h_fail "the log carries the token"
+else h_ok "the log never carries the token"; fi
+h_assert_nonempty "$(grep '\[token\]' "$base/state/launcher.log")" "the token is masked in the log"
+h_hook_json Stop cwd="$repo" | h_launch with-token "$home" -- "$boot" stop-ship plugin
+if grep -rq "$body" "$H_TMP/run" "$base/state" "$base/queue"; then h_fail "a launcher run printed or logged the token"
+else h_ok "a launcher run with a token prints and logs none of it"; fi
+rm -f "$base/tenant.env"
+
+# Signed heads: off by default; when required, an unsigned head is not run, and the
+# transcript is still queued.
+h_plant_event v5 prompt
+expire_stamp
+h_tenant_env "$home" tenant-a "BBD_REQUIRE_SIGNED_HEAD=1"
+signed_boot="$H_TMP/plugin/launcher/bbd-launch.sh"
+mkdir -p "$H_TMP/plugin/launcher"
+cp "$boot" "$signed_boot"
+h_sentinel_reset
+h_hook_json Hook cwd="$repo" | h_launch unsigned "$home" -- "$signed_boot" prompt plugin
+h_assert_hook_run unsigned "unsigned head, signatures required, no allowed signers"
+h_assert_empty "$(h_sentinel)" "unsigned head: its code did not run"
+h_hook_json Stop cwd="$repo" session_id=sid-unsigned | h_launch unsigned-ship "$home" -- "$signed_boot" stop-ship plugin
+h_assert_hook_run unsigned-ship "unsigned head, stop-ship"
+if [ -f "$base/queue/sid-unsigned.json" ]; then h_ok "unsigned head: the transcript is still queued"
+else h_fail "unsigned head: nothing queued"; fi
+
+# With an allowed key: a signed head runs; an unsigned one pushed after it does not,
+# and the checkout returns to the last head that verified.
+if command -v ssh-keygen >/dev/null 2>&1; then
+  # Assembled, so no email address is written into this public file.
+  at="@"
+  ssh-keygen -q -t ed25519 -N '' -C test -f "$H_TMP/signer" >/dev/null
+  printf 'signer%sexample.invalid namespaces="git" %s\n' "$at" "$(cut -d' ' -f1,2 "$H_TMP/signer.pub")" >"$H_TMP/plugin/allowed_signers"
+  # shellcheck disable=SC2016  # the planted script expands H_SENTINEL when it runs
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" signed >>"$H_SENTINEL"\n' >"$src/launcher/events/prompt.sh"
+  chmod +x "$src/launcher/events/prompt.sh"
+  git -C "$src" add -A
+  git -C "$src" -c user.name=t -c "user.email=t${at}example.invalid" -c gpg.format=ssh \
+    -c user.signingkey="$H_TMP/signer" commit -q -S -m "test: signed"
+  git -C "$src" push -q -f "$bare" HEAD:refs/heads/stable
+  expire_stamp
+  h_sentinel_reset
+  h_hook_json Hook cwd="$repo" | h_launch signed "$home" -- "$signed_boot" prompt plugin
+  h_assert_hook_run signed "signed head"
+  h_assert_eq "$(h_sentinel)" "signed" "signed head: its code ran"
+  good=$(git -C "$co" rev-parse HEAD)
+  h_plant_event v6 prompt
+  expire_stamp
+  h_sentinel_reset
+  h_hook_json Hook cwd="$repo" | h_launch resigned "$home" -- "$signed_boot" prompt plugin
+  h_assert_hook_run resigned "unsigned head after a signed one"
+  h_assert_eq "$(h_sentinel)" "signed" "unsigned head after a signed one: the last verified code ran"
+  h_assert_eq "$(git -C "$co" rev-parse HEAD)" "$good" "unsigned head after a signed one: the checkout returned to it"
+else
+  echo "skip: no ssh-keygen, signed-head acceptance not checked"
+fi
+rm -f "$base/tenant.env"
+
+h_done
