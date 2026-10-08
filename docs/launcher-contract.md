@@ -527,10 +527,14 @@ with nothing printed and one line in the log saying which failed:
    after a block, and the reply goes through whatever the reader would say.
 2. The draft has at least 50 prose words (fenced code left out). Shorter is an
    acknowledgement, not a draft anyone needs read.
-3. The repository's rules file, the one the vault marker names, exists and is not
-   empty. With no rules of the person's to read against, the step stands down.
-4. No receipt exists for this exact draft (`state/reader/<hash>.json`, the hash of the
+3. No receipt exists for this exact draft (`state/reader/<hash>.json`, the hash of the
    text with whitespace runs folded). A draft is read once.
+
+The repository's rules file, the one the vault marker names, is read against when it
+exists and is not empty. A repository with none (a new tenant's names `RULES.md` and
+ships none) is read all the same, against the reply contract alone, with the rules
+part given to the reader as "(none)"; standing down there would mean no reply of a
+new tenant's is ever read.
 
 **The reader** is `reader/reader.py`: it fills `reader/reader-prompt.md` with the reply
 contract (`text/reply-contract.md`), the rules file, the session's open asks from the
@@ -541,11 +545,12 @@ unanswered) and the draft, and runs one headless call:
 claude -p --model sonnet --tools "" --no-session-persistence --strict-mcp-config --output-format text
 ```
 
-Sonnet, not the plan's haiku, because this reader holds the person's turn and a false
-finding costs them a corrected reply they did not need: in the calibration run of
-2026-10-08 haiku passed the accepted draft in one run of two (the other flagged 18 things)
-and sonnet in two of two. The receipts under `state/reader/` are what to read after the
-canary window before anyone revisits it.
+Sonnet, not the plan's haiku (design decision D43 in the memory-platform change),
+because this reader holds the person's turn and a false finding costs them a corrected
+reply they did not need: in the calibration run of 2026-10-08 haiku passed the accepted
+draft in one run of two (the other flagged 18 things) and sonnet in two of two. The cost
+the person is told at intake is one sonnet call per substantive turn. The receipts under
+`state/reader/` are what to read after the canary window before anyone revisits it.
 
 with the prompt on stdin, in an empty temporary directory (so none of the person's
 project is read), with `BBD_NESTED=1` in its environment (so every launcher in that
@@ -562,7 +567,16 @@ reading stops at a `---` trailer; a finding is a `- ` line under one of the nine
 headings that opens with a quote or with `hedge lost:`; `- none` and the sentence count
 are not findings. `fix` holds only with at least one finding. Anything else (no
 `claude` on PATH, a timeout, a non-zero exit, no output, an answer out of shape) is
-`send`: no failure of the reader's own can hold a reply back.
+`send`: no failure of the reader's own can hold a reply back on a desktop home.
+
+**When the reader cannot run in a cloud session** (`CLAUDE_CODE_REMOTE` is `true` and
+the status is `no-claude`, `timeout` or `failed`), the reply is not let through unread:
+the same one block per turn is printed, and its reason is the assembled prompt
+(`reader-prompt.md` filled with the contract, the rules, the asks and the draft) under
+the instruction to give it to a reader through the Agent tool, act on each finding and
+send the corrected reply. The receipt records `handed-back`. On a desktop home the
+same failure lets the reply through, logged, because there the next turn's reader will
+run and a block would only hold the person up.
 
 **The block** is `{"decision":"block","reason":"..."}`, the reason being the findings,
 one per line with their heading, under one sentence asking for the corrected reply, at
@@ -574,7 +588,7 @@ of that guard; the file is the second, for a harness that does not send the fiel
 
 **The receipt**, `lib/receipt.py`, is written for every read and every attempt, never
 for a skip: session, prompt_id, status (`read`, `unparseable`, `empty`, `no-claude`,
-`timeout`, `failed`), verdict, the number of findings, whether the turn was blocked,
+`timeout`, `failed`, `handed-back`), verdict, the number of findings, whether the turn was blocked,
 the seconds the reader took, the hook's `stop_reason` and the word count. Never the
 draft's text. Receipts and guard files older than seven days are removed in passing.
 
