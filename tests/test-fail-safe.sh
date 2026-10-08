@@ -222,32 +222,53 @@ if then fi ((('
 h_hook_json Hook cwd="$repo" | h_launch syntax-dispatch "$home" -- "$boot" stop-gate plugin
 h_assert_hook_run syntax-dispatch "a dispatcher with a syntax error"
 
-# The harness kills a hook at its timeout: the dispatcher under it goes too.
+# The harness kills a hook at its timeout: the dispatcher under it goes too, and so
+# does what the dispatcher started (an event, its python), which a kill of the
+# dispatcher alone would leave running.
 expire_stamp
 # shellcheck disable=SC2016  # the planted script expands its own variables
 h_apparatus_file launcher/dispatch.sh '#!/usr/bin/env bash
 printf "%s %s\n" "$$" "$PPID" >"$H_SENTINEL.pids"
-exec sleep 30'
-rm -f "$H_TMP/sentinel.log.pids"
+out=$(sh -c '"'"'echo $$ >"$H_SENTINEL.child"; exec sleep 30'"'"')'
+rm -f "$H_TMP/sentinel.log.pids" "$H_TMP/sentinel.log.child"
 ( h_hook_json Hook cwd="$repo" | h_launch term "$home" -- "$boot" prompt plugin ) &
 launcher_job=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  [ -s "$H_TMP/sentinel.log.pids" ] && break
+  [ -s "$H_TMP/sentinel.log.pids" ] && [ -s "$H_TMP/sentinel.log.child" ] && break
   sleep 0.5
 done
 read -r dispatch_pid boot_pid <"$H_TMP/sentinel.log.pids"
+read -r grandchild_pid <"$H_TMP/sentinel.log.child"
+if kill -0 "$grandchild_pid" 2>/dev/null; then h_ok "the planted grandchild was running"
+else h_fail "the planted grandchild never ran"; fi
 kill -TERM "$boot_pid"
 wait "$launcher_job"
 h_assert_hook_run term "a bootstrap killed by the harness"
 sleep 1
-if kill -0 "$dispatch_pid" 2>/dev/null; then
-  h_fail "a killed bootstrap left its dispatcher running"
-  kill -KILL "$dispatch_pid" 2>/dev/null
-else
-  h_ok "a killed bootstrap takes its dispatcher with it"
-fi
+for pair in "dispatcher:$dispatch_pid" "dispatcher's own child:$grandchild_pid"; do
+  if kill -0 "${pair##*:}" 2>/dev/null; then
+    h_fail "a killed bootstrap left its ${pair%%:*} running"
+    kill -KILL "${pair##*:}" 2>/dev/null
+  else
+    h_ok "a killed bootstrap takes its ${pair%%:*} with it"
+  fi
+done
 expire_stamp
 h_apparatus_file launcher/dispatch.sh "$(cat "$(h_repo_root)/launcher/dispatch.sh")"
+
+# The bound's watcher leaves nothing behind: no sleep of the fetch bound or the
+# dispatcher's outer bound outlives a run.
+# The process ids are compared, not a count, because other sleeps on the machine
+# come and go meanwhile.
+watcher_sleeps() { pgrep -f -x 'sleep (3|600)' 2>/dev/null | sort; }
+watcher_sleeps >"$H_TMP/sleeps.before"
+for n in 1 2 3; do
+  expire_stamp
+  prompt "no-leak-$n"
+done
+sleep 1
+watcher_sleeps >"$H_TMP/sleeps.after"
+h_assert_empty "$(comm -13 "$H_TMP/sleeps.before" "$H_TMP/sleeps.after")" "no watcher sleep outlives a run"
 
 # A checkout whose .git is broken, in a home that is itself a git repository (a
 # dotfiles home): git must not walk up and reset the home. The checkout is rebuilt.

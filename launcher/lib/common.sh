@@ -227,16 +227,55 @@ bbd_lock() {
 
 bbd_unlock() { rm -rf "$1" 2>/dev/null; return 0; }
 
-# bbd_bounded SECONDS CMD...: run an external command, killed after SECONDS (macOS
-# has no `timeout`). Its stdout is passed through; the watcher holds no stdout, so a
-# caller reading the output is not kept waiting by it.
+# bbd_tree PID: PID and every process below it, from one process listing taken
+# before anything is killed, so a kill reaches the grandchildren (an event's python,
+# git's transport helper) that a plain kill of PID would leave running.
+bbd_tree() {
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+    $1 != $2 { kids[$2] = kids[$2] " " $1 }
+    END {
+      queue = root
+      out = ""
+      while (queue != "") {
+        n = split(queue, q, " ")
+        queue = ""
+        for (i = 1; i <= n; i++) {
+          out = out " " q[i]
+          if (q[i] in kids) queue = queue kids[q[i]]
+        }
+      }
+      print out
+    }'
+}
+
+# bbd_kill_tree PID SIGNAL
+bbd_kill_tree() {
+  local pids
+  pids=$(bbd_tree "$1")
+  [ -n "$pids" ] || pids=$1
+  # shellcheck disable=SC2086  # a list of numeric pids
+  kill "-$2" $pids 2>/dev/null
+  return 0
+}
+
+# bbd_bounded SECONDS CMD...: run a command, it and everything under it killed after
+# SECONDS (macOS has no `timeout`). Its stdout is passed through; the watcher holds no
+# stdout, so a caller reading the output is not kept waiting by it, and it kills its
+# own sleep when stopped, so nothing of it outlives the run.
 bbd_bounded() {
   local secs=$1 pid watcher rc
   shift
   "$@" </dev/null &
   pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null ) \
-    </dev/null >/dev/null 2>&1 &
+  (
+    trap 'kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & s=$!
+    wait "$s" 2>/dev/null || exit 0
+    bbd_kill_tree "$pid" TERM
+    sleep 1 & s=$!
+    wait "$s" 2>/dev/null || exit 0
+    bbd_kill_tree "$pid" KILL
+  ) </dev/null >/dev/null 2>&1 &
   watcher=$!
   if wait "$pid"; then rc=0; else rc=$?; fi
   kill -TERM "$watcher" 2>/dev/null || true

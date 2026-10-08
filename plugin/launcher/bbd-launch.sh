@@ -31,15 +31,16 @@ _bbd_log=""
 _bbd_lock=""
 _bbd_child=""
 _bbd_watcher=""
-_bbd_tmp=""
+_bbd_in=""
+_bbd_out=""
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 bbd_finish() {
-  if [ -n "$_bbd_child" ]; then kill -TERM "$_bbd_child" 2>/dev/null; fi
+  if [ -n "$_bbd_child" ]; then bbd_kill_tree "$_bbd_child" TERM; fi
   if [ -n "$_bbd_watcher" ]; then kill -TERM "$_bbd_watcher" 2>/dev/null; fi
   if [ -n "$_bbd_lock" ]; then rm -rf "$_bbd_lock" 2>/dev/null; _bbd_lock=""; fi
-  # shellcheck disable=SC2086  # two known paths with no spaces of their own
-  if [ -n "$_bbd_tmp" ]; then rm -f $_bbd_tmp 2>/dev/null; fi
+  if [ -n "$_bbd_in" ]; then rm -f "$_bbd_in" 2>/dev/null; fi
+  if [ -n "$_bbd_out" ]; then rm -f "$_bbd_out" 2>/dev/null; fi
   exit 0
 }
 
@@ -237,17 +238,58 @@ bbd_unlock() {
   if [ -n "$_bbd_lock" ]; then rm -rf "$_bbd_lock" 2>/dev/null; _bbd_lock=""; fi
 }
 
+# bbd_tree PID: PID and every process below it, from one process listing taken
+# before anything is killed, so a kill reaches the grandchildren (an event's python,
+# git's transport helper) that a plain kill of PID would leave running.
+bbd_tree() {
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+    $1 != $2 { kids[$2] = kids[$2] " " $1 }
+    END {
+      queue = root
+      out = ""
+      while (queue != "") {
+        n = split(queue, q, " ")
+        queue = ""
+        for (i = 1; i <= n; i++) {
+          out = out " " q[i]
+          if (q[i] in kids) queue = queue kids[q[i]]
+        }
+      }
+      print out
+    }'
+}
+
+# bbd_kill_tree PID SIGNAL
+bbd_kill_tree() {
+  local pids
+  pids=$(bbd_tree "$1")
+  [ -n "$pids" ] || pids=$1
+  # shellcheck disable=SC2086  # a list of numeric pids
+  kill "-$2" $pids 2>/dev/null
+  return 0
+}
+
 # bbd_bounded SECONDS OUT CMD...: run CMD with its stdout to the file OUT, killing it
-# after SECONDS. macOS has no `timeout`, so the bound is a watcher process. Neither
-# process holds this script's stdout, because the harness waits for stdout to close.
-# If this script is itself killed, the EXIT trap kills both.
+# and everything under it after SECONDS. macOS has no `timeout`, so the bound is a
+# watcher process; it kills its own sleep when it is stopped, so nothing of it
+# outlives the run. Neither process holds this script's stdout, because the harness
+# waits for stdout to close. If this script is itself killed, the EXIT trap kills
+# both.
 bbd_bounded() {
-  local secs=$1 out=$2 rc
+  local secs=$1 out=$2 rc child
   shift 2
   "$@" </dev/null >>"$out" 2>>"$_bbd_log" &
-  _bbd_child=$!
-  ( sleep "$secs"; kill -TERM "$_bbd_child" 2>/dev/null; sleep 1; kill -KILL "$_bbd_child" 2>/dev/null ) \
-    </dev/null >/dev/null 2>&1 &
+  child=$!
+  _bbd_child=$child
+  (
+    trap 'kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & s=$!
+    wait "$s" 2>/dev/null || exit 0
+    bbd_kill_tree "$child" TERM
+    sleep 1 & s=$!
+    wait "$s" 2>/dev/null || exit 0
+    bbd_kill_tree "$child" KILL
+  ) </dev/null >/dev/null 2>&1 &
   _bbd_watcher=$!
   if wait "$_bbd_child"; then rc=0; else rc=$?; fi
   kill -TERM "$_bbd_watcher" 2>/dev/null || true
@@ -411,12 +453,18 @@ fi
 # (0700) and removed afterwards.
 in_file=$(mktemp "$base/state/hook.XXXXXX" 2>/dev/null) || exit 0
 out_file=$(mktemp "$base/state/out.XXXXXX" 2>/dev/null) || { rm -f "$in_file"; exit 0; }
-_bbd_tmp="$in_file $out_file"
+_bbd_in=$in_file
+_bbd_out=$out_file
 printf '%s' "$input" >"$in_file"
 if [ "$event" = skill ]; then
-  bbd_bounded "$BBD_DISPATCH_BOUND" "$out_file" "${BASH:-bash}" "$co/launcher/dispatch.sh" \
-    skill "$delivery" "$in_file" "$skill_name" || bbd_log "the dispatcher failed for skill $skill_name"
-  cat "$out_file" 2>/dev/null
+  # A skill's body is printed only when the run finished: half a body is worse than
+  # none, because the model would follow it.
+  if bbd_bounded "$BBD_DISPATCH_BOUND" "$out_file" "${BASH:-bash}" "$co/launcher/dispatch.sh" \
+      skill "$delivery" "$in_file" "$skill_name"; then
+    cat "$out_file" 2>/dev/null
+  else
+    bbd_log "the dispatcher failed for skill $skill_name"
+  fi
 else
   bbd_bounded "$BBD_DISPATCH_BOUND" "$out_file" "${BASH:-bash}" "$co/launcher/dispatch.sh" \
     "$event" "$delivery" "$in_file" || bbd_log "the dispatcher failed for $event"
