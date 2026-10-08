@@ -274,8 +274,8 @@ session API (`tests/test-no-session-api.sh`).
 | Notice | Fires when | Said once per |
 | --- | --- | --- |
 | ship | the ship step left a notice under `pending` in the record (a refused key, a session held back by the post-scan, a session lost before it was sent; `lib/ship.py` writes them) | home and key |
-| version | the running Claude Code is older than `latest` in `data/claude-code.json` | home and newer version |
-| model | a model in the same line (opus, sonnet, haiku, fable) as the session's has a later release date in `data/models.json` | home and newer model |
+| version | the running Claude Code is older than `latest` in `data/claude-code.json`; never in the cloud, where the machine runs the build it ships and no restart reaches a newer one | home and newer version |
+| model | a model in the same line (opus, sonnet, haiku, fable) as the session's has a later release date in `data/models.json` | repository and newer model |
 | fresh-session | the session's compaction count (`state/compactions/<session_id>`) has reached 3, or `context_tokens` is at least 60 percent of the model's `context_window`; the thresholds are the two constants at the top of `lib/notices.py`, his to change | home, session and step: said again only when the count rises to the next multiple of 3 (at 3, 6, 9) or the share enters the next 20-point band past 60 (at 60, 80, 100), the key being `fresh-session:<session_id>:<trigger>:<step>` |
 
 The text of each is `text/notices/<name>.md`, filled in with the versions and names,
@@ -304,15 +304,26 @@ object, right after the compaction notice, because the dispatcher passes on exac
 one object. The count is read after the compact step has written it, so the third
 compaction is the one that advises.
 
-**The record** is `state/notices.json` (0600): `said` maps a key
-(`version:<latest>`, `model:<newer id>`, `fresh-session:<session_id>:<trigger>:<step>`,
-or a ship key such as `quarantine:<session_id>`) to when it was said, and a notice is marked
-said when its text is produced. `pending` is the ship step's, `{key: {text, at}}`;
-this step takes from it and never adds to it, and keeps every other key in the file
-as it found it. `stop` is a list of notice kinds, or `all`, that the person asked not
-to hear; it covers version, model and fresh-session, and not a ship notice, which
-reports a loss rather than making a suggestion. A marker whose `notices` is `false`
-turns every notice off for that repository, ship notices included.
+**The record is two files**, both of the shape `{schema, said, stop, pending}` where
+`said` maps a key to when it was said and a notice is marked said when its text is
+produced. What is the machine's lives in the home, `state/notices.json` (0600): the
+version notice (`version:<latest>`), the fresh-session advice
+(`fresh-session:<session_id>:<trigger>:<step>`, per session, so losing it costs
+nothing) and the ship step's `pending` (`{key: {text, at}}`, which this step takes
+from and never adds to). What is the person's lives in their repository,
+`.apparatus/notices.json` (0644, beside the vault marker): the model notice
+(`model:<newer id>`) and their `stop` list, so both travel with the vault as the rules
+file does and outlive a cloud machine being reclaimed (D14), which the home's state
+does not; the repository copy runs session start in the cloud, so without this a
+cloud session would repeat the model notice and forget a stop every time. The hook
+writes that file in the work tree only and never commits or pushes it; the person's
+own commit flow carries it (the auto-commit is task 5.2). A missing file is created
+on the first write; a file that exists but cannot be read is left as it is and the
+home record stands in, with nothing said about it. Reads take both files: a stop or
+a said key in either holds. Every key this step does not own is kept as it found it.
+`stop` covers version, model and fresh-session, and not a ship notice, which reports
+a loss rather than making a suggestion. A marker whose `notices` is `false` turns
+every notice off for that repository, ship notices included.
 
 **The stop is written by a skill.** Each notice text tells the model: if the person
 says they do not want this notice again, use the stop skill for its kind

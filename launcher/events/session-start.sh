@@ -25,7 +25,9 @@ fi
 # when this fires), and what the `claude` on PATH says under a 2-second bound (a
 # desktop app bundles its own build, so the CLI alone can be older or newer than the
 # session). notices.py takes the newest, so a person who already upgraded is never
-# told to restart.
+# told to restart. In the cloud (BBD_WHERE=cloud) no version notice is given at all:
+# the machine runs the build it ships, and the person cannot restart it into a
+# newer one, so the notice would be noise there.
 from_transcript=$(python3 "$BBD_CHECKOUT/lib/notices.py" running-version "$BBD_INPUT" 2>>"$BBD_LOG")
 from_cli=""
 if command -v claude >/dev/null 2>&1; then
@@ -35,6 +37,7 @@ fi
 
 text=$(python3 "$BBD_CHECKOUT/lib/notices.py" due \
   --input "$BBD_INPUT" --root "$BBD_PROJECT_ROOT" --delivery "$BBD_DELIVERY" \
+  --where "$BBD_WHERE" \
   --state "$BBD_BASE/state/notices.json" \
   --models "$BBD_CHECKOUT/data/models.json" \
   --cli "$BBD_CHECKOUT/data/claude-code.json" \

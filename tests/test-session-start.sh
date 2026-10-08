@@ -4,9 +4,11 @@
 # prints the keep-current notices that are due and nothing else: a newer Claude Code
 # than the one running, a newer model in the same line as the one in use, and the
 # fresh-session advice once a session has compacted three times or its context is
-# past sixty percent. Each notice is said once per home (per version, per newer model,
-# per session), a stop in notices.json or the marker silences it, and nothing is said
-# when everything is current. On compact, the compact step still runs and the
+# past sixty percent. Each notice is said once (the home's state/notices.json records
+# the version, fresh-session and ship notices; the repository's .apparatus/notices.json
+# records the model notice and the person's stops, so they travel with the vault and
+# survive a cloud machine being reclaimed), a stop or the marker silences it, and
+# nothing is said when everything is current. On compact, the compact step still runs and the
 # fresh-session advice is folded into its one JSON object. The step makes no network
 # call of its own, and a token shape never reaches stdout.
 set -u
@@ -36,12 +38,32 @@ ms=[m for m in json.load(open(sys.argv[1]))["models"] if m["line"]=="opus"]
 print(max(ms, key=lambda m: m["released"])["id"])' "$root/data/models.json" 2>/dev/null)
 h_assert_nonempty "$newest_opus" "data/models.json carries an opus line with release dates"
 
-# newhome NAME: a fresh account home with a token for tenant-a; prints its path.
+# newhome NAME: a fresh account home with a token for tenant-a, and a fresh
+# repository record (the model notice and the stops live there); prints its path.
 newhome() {
   local home
   home=$(h_fake_home "$1")
   h_tenant_env "$home" tenant-a "BBD_CHANNEL=stable"
+  rm -f "$repo/.apparatus/notices.json"
   printf '%s\n' "$home"
+}
+repo_record="$repo/.apparatus/notices.json"
+# cloud NAME HOME SESSION SOURCE MODEL [key=value ...]: one SessionStart turn as a cloud
+# machine fires it: the committed copy, CLAUDE_CODE_REMOTE=true, a home with no
+# install. The CLI on a cloud machine is whatever the image ships, here the latest.
+cloud() {
+  local name=$1 home=$2 sid=$3 source=$4 model=$5
+  shift 5
+  h_calls_reset claude
+  h_hook_json SessionStart cwd="$repo" session_id="$sid" source="$source" model="$model" \
+      transcript_path="$tmp/transcripts/$sid.jsonl" "$@" \
+    | h_launch "$name" "$home" CLAUDE_CODE_REMOTE=true H_FAKE_CLAUDE_STDOUT="$latest_cli (Claude Code)" \
+        -- "$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh" session-start repo
+}
+# cloud_skill NAME HOME SKILL-NAME: one skill run from a committed cloud stub.
+cloud_skill() {
+  h_launch "$1" "$2" CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR="$repo" \
+    -- "$(h_repo_root)/templates/tenant-repo/.claude/hooks/bbd-launch.sh" skill "$3" repo </dev/null
 }
 # start NAME HOME SESSION SOURCE MODEL [CLI-VERSION] [key=value ...]: one SessionStart
 # turn from the plugin. CLI-VERSION is what the fake `claude --version` prints.
@@ -77,12 +99,19 @@ lines += [{"type": "assistant", "sessionId": sid, "text": "x" * 1000} for _ in r
 lines.append({"type": "user", "version": new, "sessionId": sid})
 print("\n".join(json.dumps(l) for l in lines))' "$@" >"$tmp/transcripts/$1.jsonl"
 }
-# stops HOME: the stop list in notices.json, space-separated.
+# stops: the stop list in the repository's record, space-separated.
 stops() {
   python3 -c 'import json,sys
 try: d=json.load(open(sys.argv[1]))
 except Exception: sys.exit(0)
-print(" ".join(sorted(d.get("stop",[]))))' "$1/.claude/bbd-apparatus/state/notices.json" 2>/dev/null
+print(" ".join(sorted(d.get("stop",[]))))' "$repo_record" 2>/dev/null
+}
+# said_repo: the keys recorded as said in the repository's record, one per line.
+said_repo() {
+  python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+print("\n".join(sorted(d.get("said",{}))))' "$repo_record" 2>/dev/null
 }
 # pending HOME: the pending keys in notices.json, one per line.
 pending() {
@@ -154,7 +183,9 @@ if has "$c" "$latest_cli" && has "$c" "2.0.0"; then h_ok "behind on both: the ve
 if has "$c" "$newest_opus"; then h_ok "behind on both: the model notice names the newer model"; else h_fail "behind on both: no model notice"; fi
 if has "$c" "/model $newest_opus"; then h_ok "behind on both: the one step to switch is given"; else h_fail "behind on both: the switch step is missing"; fi
 if has "$c" "RULE-ALPHA" || has "$c" "Start with the answer"; then h_fail "behind on both: rules or the reply contract were injected at session start"; else h_ok "behind on both: no rules and no reply contract"; fi
-case "$(said "$home")" in *"model:$newest_opus"*"version:$latest_cli"*|*"version:$latest_cli"*"model:$newest_opus"*) h_ok "behind on both: both notices are recorded" ;; *) h_fail "behind on both: the record is incomplete" ;; esac
+if has "$(said "$home")" "version:$latest_cli"; then h_ok "behind on both: the version notice is recorded in the home"; else h_fail "behind on both: the version notice is not recorded"; fi
+if has "$(said_repo)" "model:$newest_opus"; then h_ok "behind on both: the model notice is recorded in the repository"; else h_fail "behind on both: the model notice is not recorded in the repository"; fi
+if has "$(said "$home")" "model:"; then h_fail "behind on both: the model notice was recorded in the home as well"; else h_ok "behind on both: the model notice is not in the home record"; fi
 start behind2 "$home" s-b2 startup claude-opus-5 "2.0.0 (Claude Code)"
 h_assert_hook_run behind2 "the next session in that home"
 h_assert_empty "$(h_run_out behind2)" "the next session in that home: neither notice is said again"
@@ -318,7 +349,7 @@ if has "$(ctx w0)" 'bbd-launch.sh" skill notices-stop-version'; then h_ok "a not
 skill sk-model "$home" notices-stop-model
 h_assert_eq "$(h_run_code sk-model)" 0 "the stop skill: exits 0"
 if has "$(h_run_out sk-model)" "off"; then h_ok "the stop skill: says that model notices are off"; else h_fail "the stop skill: printed no confirmation"; fi
-h_assert_eq "$(stops "$home")" "model" "the stop skill: the stop is recorded"
+h_assert_eq "$(stops)" "model" "the stop skill: the stop is recorded in the repository"
 start w1 "$home" s-w1 startup claude-opus-5 "2.0.0 (Claude Code)"
 c=$(ctx w1)
 if has "$c" "$newest_opus"; then h_fail "after the stop: the model notice was said"; else h_ok "after the stop: no model notice"; fi
@@ -326,10 +357,10 @@ skill sk-weather "$home" notices-stop-weather
 h_assert_eq "$(h_run_code sk-weather)" 0 "an unknown kind: exits 0"
 h_assert_empty "$(h_run_out sk-weather)" "an unknown kind: prints nothing"
 if grep -q "notices-stop" "$home/.claude/bbd-apparatus/state/launcher.log" 2>/dev/null; then h_ok "an unknown kind: refused in the log"; else h_fail "an unknown kind: no log line"; fi
-h_assert_eq "$(stops "$home")" "model" "an unknown kind: the record is unchanged"
+h_assert_eq "$(stops)" "model" "an unknown kind: the record is unchanged"
 home=$(newhome writer-all)
 skill sk-all "$home" notices-stop-all
-h_assert_eq "$(stops "$home")" "all" "a stop on all: recorded"
+h_assert_eq "$(stops)" "all" "a stop on all: recorded"
 start w-all "$home" s-wa startup claude-opus-5 "2.0.0 (Claude Code)"
 h_assert_empty "$(h_run_out w-all)" "a stop on all: nothing is said"
 
@@ -356,6 +387,54 @@ skill sk-all2 "$home" notices-stop-all
 plant_pending "$home" "token-refused" "The store refused this machine's key, so new sessions are kept here and not sent."
 start pend-stop "$home" s-p4 startup "$newest_opus" "$latest_cli (Claude Code)"
 if has "$(ctx pend-stop)" "refused this machine's key"; then h_ok "a pending ship notice is said despite a stop on all"; else h_fail "a stop on all silenced a loss notice"; fi
-h_assert_eq "$(stops "$home")" "all" "a pending ship notice: the stop list is preserved through the read"
+h_assert_eq "$(stops)" "all" "a pending ship notice: the stop list is preserved through the read"
+
+# 13. A cloud machine. Its state is lost when the machine is reclaimed, so what must
+# hold across sessions lives in the repository: the model notice is said once per
+# repository, and a stop made through a committed stub holds in the next machine. The
+# version notice is not given there at all: the cloud runs the build it ships and the
+# person cannot restart into a newer one. The repository file is written in the work
+# tree, 0644, and no git command touches it.
+rm -f "$repo_record"
+cloudhome=$(h_fake_home cloud-1)
+transcript s-cl1 2.0.0
+h_calls_reset git
+cloud cl1 "$cloudhome" s-cl1 resume claude-opus-5
+h_assert_hook_run cl1 "a cloud session on an older model"
+c=$(ctx cl1)
+if has "$c" "$newest_opus"; then h_ok "a cloud session: the model notice is said"; else h_fail "a cloud session: no model notice"; fi
+if has "$c" "newer Claude Code"; then h_fail "a cloud session: a version notice was given where no restart can act on it"; else h_ok "a cloud session: no version notice"; fi
+if [ -f "$repo_record" ]; then h_ok "a cloud session: the repository record exists"; else h_fail "a cloud session: no repository record"; fi
+case "$(uname)" in
+  Darwin) rmode=$(stat -f '%Lp' "$repo_record" 2>/dev/null) ;;
+  *) rmode=$(stat -c '%a' "$repo_record" 2>/dev/null) ;;
+esac
+h_assert_eq "$rmode" 644 "a cloud session: the repository record is 0644"
+case "$("$(h_real_bin git)" -C "$repo" status --porcelain -- .apparatus/notices.json)" in "?? "*) h_ok "a cloud session: the record is untracked in the work tree, not committed" ;; *) h_fail "a cloud session: the record is not an untracked work-tree file" ;; esac
+h_assert_empty "$(h_calls git | grep -F notices.json || true)" "a cloud session: no git command touched the record"
+h_assert_empty "$(find "$cloudhome" -name notices.json -path '*state*' -exec grep -l 'model:' {} \; 2>/dev/null)" "a cloud session: the model notice is not recorded in the machine's state"
+cloudhome2=$(h_fake_home cloud-2)
+cloud cl2 "$cloudhome2" s-cl2 startup claude-opus-5
+h_assert_empty "$(h_run_out cl2)" "the next cloud machine: the model notice is not said again"
+rm -f "$repo_record"
+cloudhome3=$(h_fake_home cloud-3)
+cloud_skill cl-stop "$cloudhome3" notices-stop-model
+if has "$(h_run_out cl-stop)" "off"; then h_ok "a stop from a committed cloud stub: confirmed"; else h_fail "a stop from a committed cloud stub: no confirmation"; fi
+h_assert_eq "$(stops)" "model" "a stop from a committed cloud stub: recorded in the repository"
+cloudhome4=$(h_fake_home cloud-4)
+cloud cl3 "$cloudhome4" s-cl3 startup claude-opus-5
+h_assert_empty "$(h_run_out cl3)" "the next cloud machine: the stop still holds"
+h_assert_empty "$(h_calls git | grep -F notices.json || true)" "the cloud runs: no git command touched the record at any point"
+
+# 14. A repository record that cannot be read is left alone and the home record is
+# used; the session is not affected.
+home=$(newhome broken-record)
+printf '%s\n' '{not json' >"$repo_record"
+start broken "$home" s-br1 startup claude-opus-5 "2.0.0 (Claude Code)"
+h_assert_hook_run broken "a broken repository record"
+if has "$(ctx broken)" "$newest_opus"; then h_ok "a broken repository record: the model notice still comes"; else h_fail "a broken repository record: no model notice"; fi
+h_assert_eq "$(cat "$repo_record")" '{not json' "a broken repository record: left exactly as it was"
+if has "$(said "$home")" "model:$newest_opus"; then h_ok "a broken repository record: the home record carried the notice"; else h_fail "a broken repository record: the notice was recorded nowhere"; fi
+rm -f "$repo_record"
 
 h_done

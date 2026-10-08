@@ -22,7 +22,10 @@ case "$name" in
       version|model|fresh-session|all) ;;
       *) bbd_log "notices-stop: unknown kind '$kind'; nothing written"; exit 0 ;;
     esac
-    if python3 "$BBD_CHECKOUT/lib/notices.py" stop "$BBD_BASE/state/notices.json" "$kind" 2>>"$BBD_LOG"; then
+    # The stop is the person's, so it goes to the repository's .apparatus/notices.json
+    # (written in the work tree, never committed here) and travels with their vault;
+    # the home record stands in when that file cannot be used.
+    if python3 "$BBD_CHECKOUT/lib/notices.py" stop "$BBD_BASE/state/notices.json" "$kind" "$BBD_PROJECT_ROOT" 2>>"$BBD_LOG"; then
       case "$kind" in
         all) what="Every keep-current notice is" ;;
         fresh-session) what="Fresh-session advice is" ;;

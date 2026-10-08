@@ -9,14 +9,27 @@ section 12).
   notices.py due --input <input-file> --state <notices.json> --models <models.json>
                  --cli <claude-code.json> --compactions <dir> [--root <project root>]
                  [--running-version <x.y.z>]... [--delivery plugin|repo]
+                 [--where desktop|remote-control|cloud]
                  [--kinds version,model,fresh-session,ship]
       Prints the text of every notice that is due, and records each one as said.
       Nothing is printed when nothing is due. --running-version may be given more
-      than once (the transcript's and the CLI's); the newest wins.
+      than once (the transcript's and the CLI's); the newest wins. In the cloud the
+      version notice is never given: the machine runs the build it ships and the
+      person cannot restart it into a newer one, so the notice would be noise.
 
-  notices.py stop <notices.json> <kind|all>
+  notices.py stop <notices.json> <kind|all> [<project root>]
       Records that the person does not want that kind of notice again. An unknown
       kind is refused: exit 0, a line on stderr, nothing written.
+
+Two records. The home's state/notices.json (0600) holds what is the machine's: the
+version notice, the fresh-session advice (per session) and the ship step's pending
+notices. The repository's .apparatus/notices.json (0644, beside the vault marker)
+holds what is the person's and must outlive a cloud machine being reclaimed: the
+model notice and their stops; it travels with the vault as the rules file does. It is
+written in the work tree only, never committed or pushed by the hook. A repository
+file that is missing is created on the first write; one that exists but cannot be
+read is left as it is and the home record stands in. Reads take both: a stop or a
+model notice recorded in either holds.
 
 Four notices, each said once per account home:
   version        a newer Claude Code than the one running; once per newer version
@@ -145,12 +158,14 @@ def template(name: str, **fields: str) -> str:
 
 
 class Record:
-    """notices.json: what was said, what the ship step left pending, and any stop the
-    tenant asked for. Keys this code does not know are kept as they are, so a writer
-    on the other side of the file (lib/ship.py) loses nothing when this one saves."""
+    """A notices.json: what was said, what the ship step left pending, and any stop
+    the tenant asked for. Keys this code does not know are kept as they are, so a
+    writer on the other side of the file (lib/ship.py) loses nothing when this one
+    saves. MODE is the file's mode: 0600 for the home's, 0644 for the repository's."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, mode: int = 0o600):
         self.path = path
+        self.mode = mode
         self.doc = load_json(path)
         said = self.doc.get("said")
         self.said = said if isinstance(said, dict) else {}
@@ -194,19 +209,72 @@ class Record:
         doc = dict(self.doc)
         doc.update({"schema": 1, "said": self.said, "stop": sorted(self.stop), "pending": self.pending})
         d = os.path.dirname(self.path) or "."
-        os.makedirs(d, mode=0o700, exist_ok=True)
+        if self.mode == 0o600:
+            os.makedirs(d, mode=0o700, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".notices.", dir=d)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=1, sort_keys=True)
                 f.write("\n")
-            os.chmod(tmp, 0o600)
+            os.chmod(tmp, self.mode)
             os.replace(tmp, self.path)
         except OSError:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
+
+
+def repo_record(root: str) -> Record | None:
+    """The repository's record, or None when there is no root, no .apparatus directory
+    (the marker's home, so it exists wherever the launcher acts), or a file there that
+    does not parse: that file is left alone and the home record stands in."""
+    if not root:
+        return None
+    d = os.path.join(root, ".apparatus")
+    if not os.path.isdir(d):
+        return None
+    path = os.path.join(d, "notices.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                if not isinstance(json.load(f), dict):
+                    return None
+        except (OSError, ValueError):
+            return None
+    return Record(path, 0o644)
+
+
+class Records:
+    """The home record and, when it is usable, the repository record, read as one:
+    a stop or a said key in either holds. Writes go where the kind belongs."""
+
+    def __init__(self, home_path: str, root: str):
+        self.home = Record(home_path)
+        self.repo = repo_record(root)
+        self.pending = self.home.pending
+
+    def stopped(self, kind: str) -> bool:
+        return self.home.stopped(kind) or (self.repo is not None and self.repo.stopped(kind))
+
+    def said(self, key: str) -> bool:
+        return key in self.home.said or (self.repo is not None and key in self.repo.said)
+
+    def mark(self, key: str, travels: bool = False) -> None:
+        """TRAVELS: the key is the person's (the model notice) and goes to the
+        repository record when there is one."""
+        (self.repo if travels and self.repo is not None else self.home).mark(key)
+
+    def add_stop(self, kind: str) -> None:
+        (self.repo if self.repo is not None else self.home).add_stop(kind)
+
+    def take_pending(self) -> list:
+        return self.home.take_pending()
+
+    def save(self) -> None:
+        self.home.save()
+        if self.repo is not None:
+            self.repo.save()
 
 
 def marker_allows(root: str) -> bool:
@@ -244,13 +312,13 @@ def stop_skill(delivery: str, kind: str) -> str:
     return STOP_SKILLS.get(delivery, STOP_SKILLS["plugin"]) % kind
 
 
-def version_notice(rec: Record, running: str, cli: dict, delivery: str) -> str:
+def version_notice(rec: Records, running: str, cli: dict, delivery: str) -> str:
     latest = cli.get("latest") if isinstance(cli.get("latest"), str) else ""
     have, want = parse_version(running), parse_version(latest)
     if not have or not want or have >= want:
         return ""
     key = "version:" + latest
-    if key in rec.said:
+    if rec.said(key):
         return ""
     text = template("version", latest=latest, running=running,
                     stop_skill=stop_skill(delivery, "version"),
@@ -260,7 +328,7 @@ def version_notice(rec: Record, running: str, cli: dict, delivery: str) -> str:
     return text
 
 
-def model_notice(rec: Record, model_id: str, models: list, delivery: str) -> str:
+def model_notice(rec: Records, model_id: str, models: list, delivery: str) -> str:
     current = find_model(models, model_id)
     if not current:
         return ""
@@ -268,7 +336,7 @@ def model_notice(rec: Record, model_id: str, models: list, delivery: str) -> str
     if not newer:
         return ""
     key = "model:" + newer["id"]
-    if key in rec.said:
+    if rec.said(key):
         return ""
     text = template(
         "model",
@@ -281,7 +349,7 @@ def model_notice(rec: Record, model_id: str, models: list, delivery: str) -> str
         stop_command=stop_command(delivery, "model"),
     )
     if text:
-        rec.mark(key)
+        rec.mark(key, travels=True)
     return text
 
 
@@ -295,7 +363,7 @@ def compaction_count(compactions_dir: str, sid: str) -> int:
         return 0
 
 
-def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir: str,
+def fresh_notice(rec: Records, doc: dict, sid: str, models: list, compactions_dir: str,
                  delivery: str) -> str:
     """Said once per session and step: the key carries the trigger and the step it
     reached, so the advice comes at compaction 3, 6, 9 and at 60, 80, 100 percent,
@@ -306,7 +374,7 @@ def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir
     count = compaction_count(compactions_dir, sid)
     if count >= FRESH_COMPACTIONS:
         key = "fresh-session:%s:compactions:%d" % (sid, count // FRESH_COMPACTIONS)
-        if key not in rec.said:
+        if not rec.said(key):
             reason = "has been compacted %d times" % count
     if not reason:
         tokens = doc.get("context_tokens")
@@ -319,7 +387,7 @@ def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir
                 and isinstance(window, int) and window > 0 and tokens / window >= FRESH_CONTEXT):
             share = tokens / window
             key = "fresh-session:%s:context:%d" % (sid, int((share - FRESH_CONTEXT) / FRESH_BAND))
-            if key not in rec.said:
+            if not rec.said(key):
                 reason = "is past %d percent of its context" % int(100 * share)
     if not reason:
         return ""
@@ -331,10 +399,10 @@ def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir
     return text
 
 
-def ship_notices(rec: Record) -> str:
+def ship_notices(rec: Records) -> str:
     parts = []
     for key, text in rec.take_pending():
-        if key in rec.said:
+        if rec.said(key):
             continue
         filled = template("ship", text=text)
         if filled:
@@ -347,10 +415,13 @@ def due(opts: dict) -> str:
     doc = hookio.load(opts["input"])
     if not marker_allows(opts.get("root", "")):
         return ""
-    rec = Record(opts["state"])
+    rec = Records(opts["state"], opts.get("root", ""))
     models = load_json(opts["models"]).get("models")
     models = models if isinstance(models, list) else []
     kinds = [k for k in opts["kinds"] if k in KINDS and not rec.stopped(k)]
+    # The cloud runs the build it ships; no restart there reaches a newer one.
+    if opts.get("where") == "cloud":
+        kinds = [k for k in kinds if k != "version"]
     delivery = opts.get("delivery") or "plugin"
     sid = hookio.field(doc, "session_id")
     if not SESSION_ID.fullmatch(sid):
@@ -368,13 +439,14 @@ def due(opts: dict) -> str:
     return TOKEN.sub("[token]", "\n\n".join(p for p in parts if p))
 
 
-def stop(state: str, kind: str) -> bool:
-    """Record a stop; False (and a line on stderr) for a kind that is not one."""
+def stop(state: str, kind: str, root: str = "") -> bool:
+    """Record a stop, in the repository's record when it is usable, else the home's;
+    False (and a line on stderr) for a kind that is not one."""
     if kind != "all" and kind not in STOPPABLE:
         print("notices-stop: unknown kind %r; one of %s or all"
               % (kind, ", ".join(STOPPABLE)), file=sys.stderr)
         return False
-    rec = Record(state)
+    rec = Records(state, root)
     rec.add_stop(kind)
     rec.save()
     return True
@@ -382,9 +454,10 @@ def stop(state: str, kind: str) -> bool:
 
 def parse(argv: list) -> dict | None:
     opts = {"input": "", "state": "", "models": "", "cli": "", "compactions": "", "root": "",
-            "delivery": "", "running": [], "kinds": list(KINDS)}
+            "delivery": "", "where": "", "running": [], "kinds": list(KINDS)}
     names = {"--input": "input", "--state": "state", "--models": "models", "--cli": "cli",
-             "--compactions": "compactions", "--root": "root", "--delivery": "delivery"}
+             "--compactions": "compactions", "--root": "root", "--delivery": "delivery",
+             "--where": "where"}
     i = 0
     while i + 1 < len(argv):
         a, v = argv[i], argv[i + 1]
@@ -408,21 +481,21 @@ def main(argv: list) -> int:
         if v:
             print(v)
         return 0
-    if len(argv) == 3 and argv[0] == "stop":
-        stop(argv[1], argv[2])
+    if len(argv) in (3, 4) and argv[0] == "stop":
+        stop(argv[1], argv[2], argv[3] if len(argv) == 4 else "")
         return 0
     if argv and argv[0] == "due":
         opts = parse(argv[1:])
         if opts is None:
             print("usage: notices.py due --input F --state F --models F --cli F --compactions DIR"
-                  " [--root DIR] [--running-version V]... [--delivery D] [--kinds a,b]",
+                  " [--root DIR] [--running-version V]... [--delivery D] [--where W] [--kinds a,b]",
                   file=sys.stderr)
             return 0
         text = due(opts)
         if text:
             print(text)
         return 0
-    print("usage: notices.py running-version INPUT | stop STATE KIND | due ...", file=sys.stderr)
+    print("usage: notices.py running-version INPUT | stop STATE KIND [ROOT] | due ...", file=sys.stderr)
     return 0
 
 
