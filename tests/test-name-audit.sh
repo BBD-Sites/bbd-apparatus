@@ -32,7 +32,11 @@ ALLOWED_EMAIL="apparatus-maintainers@users.noreply.github.com"
 # GitHub's web-flow committer, assembled so the email scan below does not flag this
 # file; it is accepted only as a committer, never as an author.
 GITHUB_COMMITTER="noreply""@github.com"
-ALLOWED_OWNER="Personal-Tooling"
+ALLOWED_OWNER="BBD-Sites"
+# The owner this repository had before it moved (design D41). Any mention of it now is
+# a stale address, and the frozen bootstrap must never fetch from it, so it is refused
+# anywhere: files, paths and commit metadata. Assembled, so this file does not match.
+FORMER_OWNER="Personal""-Tooling"
 # Written as a bracket expression so this file does not match its own pattern.
 HOME_PATH_RE='/User[s]/[^/[:space:]]+/'
 EMAIL_RE='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
@@ -93,6 +97,11 @@ audit_static() {
   git -C "$repo" grep -h -o -I -E -e "$EMAIL_RE" -- . 2>/dev/null \
     | grep -v -x -F -e "$ALLOWED_EMAIL" | sort -u \
     | sed 's/.*/an email address other than the neutral one/' | sort -u || true
+  git -C "$repo" grep -c -I -i -F -e "$FORMER_OWNER" -- . 2>/dev/null \
+    | sed 's/^/the former owner named in file /' || true
+  if git -C "$repo" log --format='%an%n%cn%n%B' HEAD 2>/dev/null | grep -q -i -F -e "$FORMER_OWNER"; then
+    echo "the former owner named in commit metadata"
+  fi
   git -C "$repo" grep -n -o -I -E -e "$OWNER_RE" -- . 2>/dev/null \
     | awk -F: -v ok="$ALLOWED_OWNER" '{ o = $NF; sub(/^.*[\/:]/, "", o); if ($0 !~ ("[/:]" ok "$")) print "GitHub owner other than " ok " in " $1 ":" $2 }' || true
 }
@@ -178,6 +187,23 @@ self_check() {
     *) h_fail "self-check: a foreign GitHub owner was missed" ;; esac
   case "$out" in *"leaks.txt:4"*) h_fail "self-check: this repository's own owner was flagged" ;;
     *) h_ok "self-check: this repository's own owner passes" ;; esac
+  case "$out" in *"former owner"*) h_fail "self-check: the former owner was reported where it does not appear" ;;
+    *) h_ok "self-check: no former-owner report without the former owner" ;; esac
+
+  # The old address of this repository is refused, even though its owner part is
+  # spelled differently in case: a file carrying it fails the audit.
+  old=$(h_fake_repo former-owner)
+  printf 'BBD_URL="https://github.com/%s/bbd-apparatus.git"\n' "$(printf '%s' "$FORMER_OWNER" | tr '[:upper:]' '[:lower:]')" >"$old/bootstrap.sh"
+  h_git -C "$old" add bootstrap.sh
+  h_git -C "$old" commit -q -m "chore: an old address"
+  out=$(audit_static "$old")
+  case "$out" in *"the former owner named in file bootstrap.sh"*) h_ok "self-check: the former owner's URL is caught" ;;
+    *) h_fail "self-check: the former owner's URL was missed" ;; esac
+  git -C "$old" rm -q bootstrap.sh
+  h_git -C "$old" commit -q -m "chore: moved from $FORMER_OWNER"
+  out=$(audit_static "$old")
+  case "$out" in *"former owner named in commit metadata"*) h_ok "self-check: the former owner in a commit message is caught" ;;
+    *) h_fail "self-check: the former owner in a commit message was missed" ;; esac
 }
 
 self_check

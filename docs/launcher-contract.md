@@ -69,7 +69,7 @@ Mac has none.
    - A fetch is skipped if the last one finished under 20 seconds ago (a stamp file),
      so the prompt and Stop hooks of one turn fetch once between them.
    - Otherwise:
-     `git fetch --depth=1 https://github.com/Personal-Tooling/bbd-apparatus.git <channel>`
+     `git fetch --depth=1 https://github.com/BBD-Sites/bbd-apparatus.git <channel>`
      under a 3-second bound. macOS has no `timeout` command, so the bound is a
      background process and a kill.
    - On success, `git reset --hard FETCH_HEAD`. That single step is both the

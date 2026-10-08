@@ -17,7 +17,7 @@
 # here: on UserPromptSubmit it becomes model context, so only the checkout's
 # dispatcher, which emits hook JSON, ever writes to it.
 
-BBD_URL="https://github.com/Personal-Tooling/bbd-apparatus.git"
+BBD_URL="https://github.com/BBD-Sites/bbd-apparatus.git"
 BBD_FETCH_BOUND=3   # seconds a fetch may take before this turn runs the last checkout
 BBD_STAMP_FRESH=20  # seconds after a fetch in which another is skipped (one per turn)
 BBD_LOCK_STALE=60   # seconds after which a fetch lock is taken to be a dead holder's

@@ -246,7 +246,7 @@ h_done() {
 # `env -i`, so nothing from the machine running the tests (its own Claude Code
 # variables, its real home and config) reaches the launcher.
 
-H_APPARATUS_URL="https://github.com/Personal-Tooling/bbd-apparatus.git"
+H_APPARATUS_URL="https://github.com/BBD-Sites/bbd-apparatus.git"
 
 # The bootstrap under test, as the plugin ships it.
 h_bootstrap() {
