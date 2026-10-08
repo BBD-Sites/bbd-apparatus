@@ -269,23 +269,29 @@ asks are injected here; the next prompt brings them. Nothing here reads a networ
 the two files compared against arrive with the checkout, and nothing reads the
 session API (`tests/test-no-session-api.sh`).
 
-**Three notices**, decided and recorded by `lib/notices.py`:
+**Four notices**, decided and recorded by `lib/notices.py`:
 
 | Notice | Fires when | Said once per |
 | --- | --- | --- |
+| ship | the ship step left a notice under `pending` in the record (a refused key, a session held back by the post-scan, a session lost before it was sent; `lib/ship.py` writes them) | home and key |
 | version | the running Claude Code is older than `latest` in `data/claude-code.json` | home and newer version |
 | model | a model in the same line (opus, sonnet, haiku, fable) as the session's has a later release date in `data/models.json` | home and newer model |
 | fresh-session | the session's compaction count (`state/compactions/<session_id>`) has reached 3, or `context_tokens` is at least 60 percent of the model's `context_window`; the thresholds are the two constants at the top of `lib/notices.py`, his to change | home and session |
 
 The text of each is `text/notices/<name>.md`, filled in with the versions and names,
 and asks the model to say the one sentence in its first reply and then let it rest.
+A ship notice's sentence is the one `lib/ship.py` stored, wrapped by
+`text/notices/ship.md`; it is said at the next session start or compaction, then
+moved from `pending` to `said`.
 
-**The running version** is the `version` field the transcript's lines carry, when the
-transcript the hook names exists (a resume or fork). Otherwise it is what `claude
---version` on PATH prints, under a 2-second bound, and no version notice is given
-when neither answers or the answer is not `x.y.z`. The transcript is preferred
-because the CLI on PATH can be a different build from the one running the session
-(a desktop app bundles its own). The hook JSON itself carries no version field.
+**The running version** is the newest of two readings. One is the LAST `version`
+field in the tail (256 KB) of the transcript the hook names, when it exists: a
+session that was upgraded mid-way carries two builds, the older first, so the first
+field would tell a person who already restarted to restart again. The other is what
+`claude --version` on PATH prints, under a 2-second bound, because the current
+build's lines may not be in the transcript yet when the hook fires. Neither is a
+network call. No version notice is given when neither answers or the answer is not
+`x.y.z`. The hook JSON itself carries no version field.
 
 **The model** is the hook's `model`; a dated id (`-20250929`) or a long-context form
 (`[1m]`) is compared by its bare id. A model not listed in `data/models.json` gets no model notice and no
@@ -299,11 +305,30 @@ one object. The count is read after the compact step has written it, so the thir
 compaction is the one that advises.
 
 **The record** is `state/notices.json` (0600): `said` maps a key
-(`version:<latest>`, `model:<newer id>`, `fresh-session:<session_id>`) to when it was
-said, and a notice is marked said when its text is produced. `stop` is a list of
-notice kinds, or `all`, that the person asked not to hear; a marker whose `notices`
-is `false` turns every notice off for that repository. Recording a stop from the
-person's own words is a later task; the record honours it now.
+(`version:<latest>`, `model:<newer id>`, `fresh-session:<session_id>`, or a ship
+key such as `quarantine:<session_id>`) to when it was said, and a notice is marked
+said when its text is produced. `pending` is the ship step's, `{key: {text, at}}`;
+this step takes from it and never adds to it, and keeps every other key in the file
+as it found it. `stop` is a list of notice kinds, or `all`, that the person asked not
+to hear; it covers version, model and fresh-session, and not a ship notice, which
+reports a loss rather than making a suggestion. A marker whose `notices` is `false`
+turns every notice off for that repository, ship notices included.
+
+**The stop is written by a skill.** Each notice text tells the model: if the person
+says they do not want this notice again, run the stop command for its kind with the
+Bash tool and say in one sentence that it is off. The command is the bootstrap's
+skill form, in the delivery the notice came through:
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh" skill notices-stop-<kind>
+bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh" skill notices-stop-<kind> repo
+```
+
+`<kind>` is `version`, `model`, `fresh-session` or `all`. The kind rides in the
+skill's name because the bootstrap, which never changes, passes a skill one word and
+nothing after it. `launcher/events/skill.sh` records the stop through
+`lib/notices.py stop` and prints the one line the model says; a name with any other
+kind is refused: nothing printed, nothing written, one line in the log.
 
 `data/models.json` and `data/claude-code.json` are maintained by pull request, not read
 from a registry at session start: the cloud session machine's network allowlist admits
