@@ -36,7 +36,7 @@ _bbd_out=""
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 bbd_finish() {
-  if [ -n "$_bbd_child" ]; then bbd_kill_tree "$_bbd_child" TERM; fi
+  if [ -n "$_bbd_child" ]; then bbd_kill_tree "$_bbd_child" TERM escalate; fi
   if [ -n "$_bbd_watcher" ]; then kill -TERM "$_bbd_watcher" 2>/dev/null; fi
   if [ -n "$_bbd_lock" ]; then rm -rf "$_bbd_lock" 2>/dev/null; _bbd_lock=""; fi
   if [ -n "$_bbd_in" ]; then rm -f "$_bbd_in" 2>/dev/null; fi
@@ -240,7 +240,9 @@ bbd_unlock() {
 
 # bbd_tree PID: PID and every process below it, from one process listing taken
 # before anything is killed, so a kill reaches the grandchildren (an event's python,
-# git's transport helper) that a plain kill of PID would leave running.
+# git's transport helper) that a plain kill of PID would leave running. A process
+# that detached itself (a double fork, setsid) is no longer below PID and is not
+# reached; nothing the launcher starts does that.
 bbd_tree() {
   ps -A -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
     $1 != $2 { kids[$2] = kids[$2] " " $1 }
@@ -259,13 +261,26 @@ bbd_tree() {
     }'
 }
 
-# bbd_kill_tree PID SIGNAL
+# bbd_kill_tree PID SIGNAL [escalate]: signal PID's whole tree; with "escalate", a second
+# later KILL whatever of that same tree is still alive, for a process that ignores
+# TERM. Without ps (a minimal container), only PID itself is reached.
 bbd_kill_tree() {
-  local pids
+  local pids p alive=""
   pids=$(bbd_tree "$1")
-  [ -n "$pids" ] || pids=$1
+  if [ -z "$pids" ]; then
+    pids=$1
+    bbd_log "no process listing; only the direct child is stopped"
+  fi
   # shellcheck disable=SC2086  # a list of numeric pids
   kill "-$2" $pids 2>/dev/null
+  if [ "${3:-}" = escalate ]; then
+    for p in $pids; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    if [ -n "$alive" ]; then
+      sleep 1
+      # shellcheck disable=SC2086  # a list of numeric pids
+      kill -KILL $alive 2>/dev/null
+    fi
+  fi
   return 0
 }
 
