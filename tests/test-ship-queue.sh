@@ -31,7 +31,14 @@ mkdir -p "$store"
 python3 "$(h_repo_root)/tests/lib/fake_store.py" "$store" 2>"$store.stderr" &
 store_pid=$!
 trap 'kill "$store_pid" 2>/dev/null; wait "$store_pid" 2>/dev/null; h_cleanup' EXIT
-for _ in $(seq 1 50); do [ -s "$store/port" ] && break; sleep 0.1; done
+# A cold python on a CI runner can take several seconds to start. The address is
+# read only once the store has written its port: read too early, it would be
+# http://127.0.0.1: with no port, and every post would be refused.
+for _ in $(seq 1 300); do [ -s "$store/port" ] && break; sleep 0.1; done
+if [ ! -s "$store/port" ]; then
+  h_fail "the stand-in store did not start within 30 seconds"
+  h_done
+fi
 url="http://127.0.0.1:$(cat "$store/port")"
 answer() { printf '%s\n' "$1" >"$store/status"; }
 requests() { awk 'END { print NR }' "$store/requests.jsonl" 2>/dev/null || echo 0; }
