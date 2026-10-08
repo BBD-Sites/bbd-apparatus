@@ -2,12 +2,17 @@
 """Hook input and output: the one place that reads a hook's stdin JSON and writes the
 JSON Claude Code reads back, so every event speaks the same shape.
 
-  hookio.py field <input-file> <name>    print one top-level string field, or nothing
+  hookio.py field <input-file> <name>    print one top-level string field, or nothing,
+                                         as one line (newlines become spaces)
+  hookio.py text <input-file> <name>     print one top-level string field as it is,
+                                         newlines kept, for a caller writing it to a file
+  hookio.py flag <input-file> <name>     exit 0 when the field is true (a boolean, or
+                                         the word), else 1
   hookio.py context <EventName>          stdin text -> hookSpecificOutput.additionalContext
   hookio.py block                        stdin text -> {"decision": "block", "reason": ...}
   hookio.py check                        stdin -> the same JSON object, or nothing
 
-Every command exits 0: a launcher must never fail a turn. `check` prints only a single
+Every command but `flag` exits 0: a launcher must never fail a turn. `check` prints only a single
 JSON object and drops anything else, because a hook's stdout on UserPromptSubmit
 becomes model context and on Stop becomes a decision.
 """
@@ -61,6 +66,13 @@ def main(argv: list) -> int:
         if value:
             # One line: a caller reads it with $(...), and a newline would split it.
             print(value.replace("\n", " ").replace("\r", " "))
+    elif cmd == "text" and len(argv) == 3:
+        value = field(load(argv[1]), argv[2])
+        if value:
+            sys.stdout.write(value)
+    elif cmd == "flag" and len(argv) == 3:
+        value = load(argv[1]).get(argv[2])
+        return 0 if value is True or value == "true" else 1
     elif cmd == "context" and len(argv) == 2:
         text = sys.stdin.read()
         if text.strip():
