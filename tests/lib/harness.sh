@@ -94,6 +94,22 @@ for a in "$@"; do line="$line$(printf "%q " "$a")"; done
 printf "%s\n" "${line% }" >>"$log"
 SH
     if [ -n "$real" ]; then
+      # H_FAKE_GIT_FETCH=fail makes every fetch and clone fail as if offline;
+      # =hang makes it sleep H_FAKE_GIT_HANG seconds (default 20), longer than any
+      # bound under test. exec, so a kill of this pid reaches the sleep itself.
+      cat <<'SH'
+sub="" skip=""
+for a in "$@"; do
+  if [ -n "$skip" ]; then skip=""; continue; fi
+  case "$a" in -C|-c) skip=1 ;; -*) ;; *) sub=$a; break ;; esac
+done
+case "$sub" in fetch|clone)
+  case "${H_FAKE_GIT_FETCH:-}" in
+    fail) echo "fatal: unable to access the remote (fake offline)" >&2; exit 128 ;;
+    hang) exec sleep "${H_FAKE_GIT_HANG:-20}" ;;
+  esac ;;
+esac
+SH
       printf 'exec %q "$@"\n' "$real"
     else
       cat <<'SH'
@@ -123,6 +139,15 @@ h_real_bin() {
     fi
   done
   return 1
+}
+
+# h_calls_reset NAME: forget a fake's recorded calls, so a test can assert on only
+# the calls one step made.
+h_calls_reset() {
+  local tmp
+  tmp=$(h_tmpdir)
+  mkdir -p "$tmp/calls"
+  : >"$tmp/calls/$1.log"
 }
 
 # h_calls NAME: every recorded call of a fake, one per line (empty if none).
@@ -159,7 +184,12 @@ for pair in pairs:
     if not sep:
         sys.exit("h_hook_json: expected key=value, got %r" % pair)
     doc[key] = value
-print(json.dumps(doc))
+try:
+    print(json.dumps(doc))
+    sys.stdout.flush()
+except BrokenPipeError:
+    # A launcher that refuses early never reads its stdin; that is not an error here.
+    sys.stdout = None
 PY
 }
 
@@ -197,4 +227,146 @@ h_done() {
     exit 1
   fi
   exit 0
+}
+
+# ---------------------------------------------------------------------------------
+# Launcher helpers. The bootstrap is run exactly as shipped: its URL is fixed, so a
+# fake home's git config maps that URL to a local bare repository (insteadOf), and
+# every launch runs under `env -i`, so nothing from the machine running the tests
+# (its own Claude Code variables, its real home and config) reaches the launcher.
+
+H_APPARATUS_URL="https://github.com/Personal-Tooling/bbd-apparatus.git"
+
+# The bootstrap under test, as the plugin ships it.
+h_bootstrap() {
+  printf '%s\n' "$(h_repo_root)/plugin/launcher/bbd-launch.sh"
+}
+
+# h_fake_apparatus: a stand-in for the public apparatus repository, built from this
+# working copy's launcher/, lib/ and bin/, with branches stable and next on a bare
+# remote at $H_TMP/apparatus.git. Prints the source work tree.
+h_fake_apparatus() {
+  local tmp src bare repo
+  tmp=$(h_tmpdir)
+  repo=$(h_repo_root)
+  src="$tmp/apparatus-src"
+  bare="$tmp/apparatus.git"
+  h_git init -q --bare "$bare"
+  h_git init -q "$src"
+  git -C "$src" symbolic-ref HEAD refs/heads/stable
+  (cd "$repo" && tar cf - --exclude __pycache__ launcher lib bin) | (cd "$src" && tar xf -)
+  h_git -C "$src" add -A
+  h_git -C "$src" commit -q -m "feat: apparatus"
+  git -C "$src" push -q "$bare" stable:stable stable:next
+  printf '%s\n' "$src"
+}
+
+# h_apparatus_file PATH CONTENT [BRANCH]: commit CONTENT at PATH in the fake
+# apparatus and force-push it to BRANCH (default stable). Force, so a test can also
+# publish history that does not descend from what a checkout holds.
+h_apparatus_file() {
+  local path=$1 content=$2 branch=${3:-stable} src
+  src="$(h_tmpdir)/apparatus-src"
+  mkdir -p "$(dirname "$src/$path")"
+  printf '%s\n' "$content" >"$src/$path"
+  chmod +x "$src/$path"
+  h_git -C "$src" add -A
+  h_git -C "$src" commit -q -m "test: $path"
+  git -C "$src" push -q -f "$(h_tmpdir)/apparatus.git" "HEAD:refs/heads/$branch"
+}
+
+# h_plant_event TAG EVENT [BRANCH]: replace EVENT's script in the fake apparatus with
+# one that appends "TAG EVENT ROOT WHERE" to $H_SENTINEL, so a test can see which
+# checkout ran, for which project, and that it ran at all.
+h_plant_event() {
+  h_apparatus_file "launcher/events/$2.sh" "#!/usr/bin/env bash
+printf '%s %s %s %s\\n' '$1' \"\$BBD_EVENT\" \"\$BBD_PROJECT_ROOT\" \"\$BBD_WHERE\" >>\"\$H_SENTINEL\"
+exit 0" "${3:-stable}"
+}
+
+# h_fake_home NAME: an account home at $H_TMP/NAME with an empty .claude, whose git
+# config sends the apparatus URL to the local bare repository. Prints its path.
+h_fake_home() {
+  local tmp home
+  tmp=$(h_tmpdir)
+  home="$tmp/$1"
+  mkdir -p "$home/.claude"
+  git config -f "$home/.gitconfig" "url.file://$tmp/apparatus.git.insteadOf" "$H_APPARATUS_URL"
+  printf '%s\n' "$home"
+}
+
+# h_mark REPO TENANT [CHANNEL]: commit the vault marker in REPO (and push it), so
+# every worktree of REPO carries it.
+h_mark() {
+  local repo=$1 tenant=$2 channel=${3:-stable}
+  mkdir -p "$repo/.apparatus"
+  python3 -c 'import json,sys; print(json.dumps({"schema": 1, "tenant": sys.argv[1], "channel": sys.argv[2], "rules": "RULES.md"}))' \
+    "$tenant" "$channel" >"$repo/.apparatus/vault.json"
+  git -C "$repo" add .apparatus/vault.json
+  h_git -C "$repo" commit -q -m "chore: vault marker"
+  git -C "$repo" push -q origin HEAD 2>/dev/null
+}
+
+# h_tenant_env HOME TENANT [LINE...]: the config file an install writes, 0600.
+h_tenant_env() {
+  local home=$1 tenant=$2 dir
+  shift 2
+  dir="$home/.claude/bbd-apparatus"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  { printf 'BBD_TENANT=%s\n' "$tenant"; for l in "$@"; do printf '%s\n' "$l"; done; } >"$dir/tenant.env"
+  chmod 600 "$dir/tenant.env"
+}
+
+# h_launch NAME HOME [VAR=value ...] -- SCRIPT [ARG...]: run a launcher as Claude
+# Code would, with stdin passed through, in a clean environment holding only PATH,
+# HOME, TMPDIR, H_SENTINEL and the VARs given. Saves $H_TMP/run/NAME.out, .err,
+# .code and .secs (wall time).
+h_launch() {
+  local name=$1 home=$2 tmp start vars=()
+  shift 2
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do vars+=("$1"); shift; done
+  [ $# -gt 0 ] && shift
+  tmp=$(h_tmpdir)
+  mkdir -p "$tmp/run"
+  start=$(date +%s)
+  env -i PATH="$PATH" HOME="$home" TMPDIR="${TMPDIR:-/tmp}" LANG=C GIT_CONFIG_NOSYSTEM=1 \
+    H_SENTINEL="$tmp/sentinel.log" ${vars[@]+"${vars[@]}"} "${BASH:-bash}" "$@" \
+    >"$tmp/run/$name.out" 2>"$tmp/run/$name.err"
+  echo $? >"$tmp/run/$name.code"
+  echo $(($(date +%s) - start)) >"$tmp/run/$name.secs"
+}
+
+h_run_out() { cat "$(h_tmpdir)/run/$1.out"; }
+h_run_code() { cat "$(h_tmpdir)/run/$1.code"; }
+h_run_secs() { cat "$(h_tmpdir)/run/$1.secs"; }
+
+# The planted events' record (empty if no checkout code ran).
+h_sentinel() {
+  local f
+  f="$(h_tmpdir)/sentinel.log"
+  [ -f "$f" ] && cat "$f"
+  return 0
+}
+
+h_sentinel_reset() { : >"$(h_tmpdir)/sentinel.log"; }
+
+# h_assert_hook_run NAME LABEL: exit 0, and stdout is empty or one JSON object, the
+# only things a hook may print.
+h_assert_hook_run() {
+  local name=$1 label=$2 out
+  h_assert_eq "$(h_run_code "$name")" 0 "$label: exits 0"
+  out=$(h_run_out "$name")
+  if [ -z "$out" ]; then
+    h_ok "$label: prints nothing on stdout"
+  elif printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if isinstance(d, dict) else 1)' 2>/dev/null; then
+    h_ok "$label: prints only hook JSON on stdout"
+  else
+    h_fail "$label: printed something other than hook JSON on stdout"
+  fi
+}
+
+# h_net_calls: recorded git calls that reach a remote or write a repository.
+h_net_calls() {
+  h_calls git | grep -E '(^| )(fetch|clone|pull|push|ls-remote|commit|init)( |$)' || true
 }
