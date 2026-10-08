@@ -5,8 +5,8 @@
 #
 # INPUT-FILE is the hook's stdin, saved by the bootstrap; it is removed when this
 # exits. The event script runs as a child with these exported: BBD_EVENT,
-# BBD_DELIVERY, BBD_INPUT, BBD_PROJECT_ROOT, BBD_TENANT, BBD_CHANNEL, BBD_WHERE,
-# BBD_BASE, BBD_LOG and BBD_CHECKOUT. An event this checkout does not know exits 0,
+# BBD_DELIVERY, BBD_INPUT, BBD_PROJECT_ROOT, BBD_TENANT, BBD_RULES, BBD_CHANNEL,
+# BBD_WHERE, BBD_BASE, BBD_LOG and BBD_CHECKOUT. An event this checkout does not know exits 0,
 # so a newer hook entry never breaks an older checkout.
 
 # An exported CDPATH makes `cd` print the directory, which would corrupt $(cd ...).
@@ -32,7 +32,7 @@ script=$BBD_CHECKOUT/launcher/events/$BBD_EVENT.sh
 
 bbd_gate "$BBD_DELIVERY" "$BBD_INPUT" "$BBD_EVENT" || exit 0
 bbd_state_dirs || exit 0
-export BBD_EVENT BBD_DELIVERY BBD_INPUT BBD_PROJECT_ROOT BBD_TENANT BBD_CHANNEL \
+export BBD_EVENT BBD_DELIVERY BBD_INPUT BBD_PROJECT_ROOT BBD_TENANT BBD_RULES BBD_CHANNEL \
   BBD_WHERE BBD_BASE BBD_LOG BBD_CHECKOUT
 
 # Stdout becomes model context on UserPromptSubmit and a decision on Stop, so only a

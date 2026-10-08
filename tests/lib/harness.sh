@@ -254,7 +254,7 @@ h_bootstrap() {
 }
 
 # h_fake_apparatus: a stand-in for the public apparatus repository, built from this
-# working copy's launcher/, lib/ and bin/, with branches stable and next on a bare
+# working copy's launcher/, lib/, bin/ and text/, with branches stable and next on a bare
 # remote at $H_TMP/apparatus.git. Prints the source work tree. It installs the fake
 # git first, because only the fake git sends the launcher's URL to the stand-in.
 h_fake_apparatus() {
@@ -267,7 +267,7 @@ h_fake_apparatus() {
   h_git init -q --bare "$bare"
   h_git init -q "$src"
   git -C "$src" symbolic-ref HEAD refs/heads/stable
-  (cd "$repo" && tar cf - --exclude __pycache__ launcher lib bin) | (cd "$src" && tar xf -)
+  (cd "$repo" && tar cf - --exclude __pycache__ launcher lib bin text) | (cd "$src" && tar xf -)
   h_git -C "$src" add -A
   h_git -C "$src" commit -q -m "feat: apparatus"
   git -C "$src" push -q "$bare" stable:stable stable:next

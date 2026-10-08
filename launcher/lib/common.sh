@@ -170,7 +170,8 @@ print(rules)
 
 # bbd_gate DELIVERY INPUT-FILE [EVENT]: returns 0 only when this event is ours to act on, the
 # same rule as the bootstrap's (docs/launcher-contract.md sections 3 and 4). Sets
-# BBD_PROJECT_ROOT, BBD_TENANT, BBD_CHANNEL and BBD_WHERE.
+# BBD_PROJECT_ROOT, BBD_TENANT, BBD_CHANNEL, BBD_WHERE and BBD_RULES (the rules file
+# the marker names, relative to the root; empty when it names none).
 bbd_gate() {
   local delivery=$1 input=$2 event=${3:-}
   bbd_paths
@@ -189,6 +190,7 @@ bbd_gate() {
     return 1
   fi
   BBD_TENANT=$BBD_MARKER_TENANT
+  BBD_RULES=$BBD_MARKER_RULES
   BBD_CHANNEL=${BBD_ENV_CHANNEL:-$BBD_MARKER_CHANNEL}
   case "$BBD_CHANNEL" in ''|-*|*[!A-Za-z0-9._-]*) BBD_CHANNEL=stable ;; esac
   BBD_WHERE=$(bbd_where)
