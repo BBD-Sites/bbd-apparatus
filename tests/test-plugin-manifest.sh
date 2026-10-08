@@ -8,7 +8,8 @@
 #     on source=compact), so neither can drift from the other;
 #   - the timeouts are the contract's (docs/launcher-contract.md section 7), the ship
 #     entry is the only asynchronous one, and the pre-write matcher is the fixed list;
-#   - the plugin and the template point at the two bootstrap copies that exist;
+#   - the plugin and the template point at the two bootstrap copies that exist, and each
+#     has the maintainers' allowed_signers file beside it, one neutral principal;
 #   - the template's settings register the marketplace with auto-update on and run the
 #     same events through the committed copy with the repo delivery;
 #   - the skill stubs route to the launcher's `skill read-draft` event;
@@ -213,11 +214,39 @@ h_assert_empty "$(audit_hooks "$HOOKS" "$PLUGIN_BOOT" plugin)" "plugin hooks: ev
 h_assert_eq "$(jget "$HOOKS" 'sorted(k for k in d if k not in ("hooks", "description"))')" '[]' "plugin hooks: only hooks and description at the top level"
 h_assert_eq "$(hook_lines "$HOOKS" | grep -c .)" 5 "plugin hooks: five command entries"
 if [ -f "$PLUGIN_DIR/launcher/bbd-launch.sh" ]; then h_ok "plugin hooks: the bootstrap they name exists"; else h_fail "plugin hooks: plugin/launcher/bbd-launch.sh is missing"; fi
-if [ -e "$PLUGIN_DIR/allowed_signers" ]; then
-  h_fail "plugin: an allowed_signers file is present; with one, every unsigned head is refused, so it ships only with the signing keys"
+
+# --- the signers file (docs/channels.md): the maintainers' public key, in the line
+# `git verify-commit` reads, beside each bootstrap copy. One principal, the neutral
+# identity, bound to the git namespace, an ssh-ed25519 key that ssh-keygen accepts, and
+# the template's copy the same bytes, so the committed delivery verifies the same heads.
+SIGNERS="$PLUGIN_DIR/allowed_signers"
+TEMPLATE_SIGNERS="$TEMPLATE/.claude/allowed_signers"
+if [ -f "$SIGNERS" ]; then h_ok "plugin: allowed_signers ships"; else h_fail "plugin: allowed_signers is missing; with no file, no head is verified"; fi
+signer_lines=$(grep -v -e '^#' -e '^[[:space:]]*$' "$SIGNERS" 2>/dev/null || true)
+h_assert_eq "$(printf '%s\n' "$signer_lines" | grep -c .)" 1 "plugin signers: exactly one principal line"
+signer_line=$(printf '%s\n' "$signer_lines" | head -1)
+principal=${signer_line%% *}; rest=${signer_line#* }
+options=${rest%% *}; rest=${rest#* }
+keytype=${rest%% *}; rest=${rest#* }
+key=${rest%% *}
+h_assert_eq "$principal" "$H_GIT_EMAIL" "plugin signers: the principal is the neutral identity"
+h_assert_eq "$options" 'namespaces="git"' "plugin signers: the key is bound to the git namespace"
+h_assert_eq "$keytype" ssh-ed25519 "plugin signers: an ssh-ed25519 key"
+case "$key" in
+  AAAAC3NzaC1lZDI1NTE5AAAAI*) h_ok "plugin signers: the key material is an ed25519 public key" ;;
+  *) h_fail "plugin signers: the key material is not an ed25519 public key" ;;
+esac
+if command -v ssh-keygen >/dev/null 2>&1; then
+  printf '%s %s\n' "$keytype" "$key" >"$H_TMP/shipped.pub"
+  case "$(ssh-keygen -l -f "$H_TMP/shipped.pub" 2>/dev/null)" in
+    *"(ED25519)"*) h_ok "plugin signers: ssh-keygen reads the key" ;;
+    *) h_fail "plugin signers: ssh-keygen does not read the key" ;;
+  esac
 else
-  h_ok "plugin: no allowed_signers file until the signing keys ship"
+  echo "skip: no ssh-keygen, the shipped key not parsed"
 fi
+if cmp -s "$SIGNERS" "$TEMPLATE_SIGNERS"; then h_ok "the template's .claude/allowed_signers is the plugin's, byte for byte"
+else h_fail "the template's .claude/allowed_signers differs from the plugin's or is missing"; fi
 
 # --- the tenant repository template.
 h_assert_empty "$(audit_hooks "$SETTINGS" "$REPO_BOOT" repo)" "template settings: the same events through the committed copy, repo delivery, ship synchronous at 60"
