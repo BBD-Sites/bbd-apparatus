@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""The apparatus command line. Every subcommand is a thin wrapper over lib/, so the
+hooks, the installer and the tests all exercise the same code.
+
+  apparatus selftest                 prove the redactor; non-zero on any failure
+  apparatus redact --self-test       the same check, under the redactor's own name
+  apparatus render <transcript.jsonl>
+                                     print the session as redacted markdown
+  apparatus postscan [--quarantine DIR | --report-only] <path>...
+                                     scan for a surviving secret shape; exit 1 on
+                                     any hit, printing file names only
+
+Exit codes: 0 pass or clean, 1 a self-test failure or a post-scan hit, 2 a usage
+error or an unreadable input, 3 a transcript with nothing to render.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+# lib/ goes first on the path, so these modules win over any of the same name that
+# happen to be installed on the machine.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import postscan  # noqa: E402
+import redact  # noqa: E402
+import render  # noqa: E402
+
+
+def cmd_selftest(_args) -> int:
+    return redact.self_test()
+
+
+def cmd_redact(args) -> int:
+    if not args.self_test:
+        print("apparatus redact: only --self-test is supported", file=sys.stderr)
+        return 2
+    return redact.self_test()
+
+
+def cmd_render(args) -> int:
+    path = Path(args.transcript)
+    if not path.is_file():
+        print(f"apparatus render: not a file: {path}", file=sys.stderr)
+        return 2
+    meta = render.extract_session(path)
+    if not meta:
+        print(f"apparatus render: no turns to render in {path.name}", file=sys.stderr)
+        return 3
+    # Bytes, not text: the rendered document is UTF-8 whatever the locale says, so a
+    # C locale on a CI runner or a cloud machine cannot change or break the output.
+    sys.stdout.buffer.write(render.render_markdown(meta).encode("utf-8"))
+    sys.stdout.flush()
+    return 0
+
+
+def default_quarantine(path: Path) -> Path:
+    """`<dir>-quarantine` beside a scanned directory, or beside a scanned file's
+    directory: outside what was scanned, so a quarantined file is never rescanned
+    or picked up by whatever reads the scanned directory next."""
+    base = path if path.is_dir() else path.parent
+    base = base.resolve()
+    return base.parent / f"{base.name}-quarantine"
+
+
+def cmd_postscan(args) -> int:
+    paths = [Path(p) for p in args.paths]
+    missing = [p for p in paths if not p.exists()]
+    if missing:
+        for p in missing:
+            print(f"apparatus postscan: no such file or directory: {p}", file=sys.stderr)
+        return 2
+    hits = []
+    unmoved = []
+    try:
+        for p in paths:
+            if args.report_only:
+                q = None
+            elif args.quarantine:
+                q = Path(args.quarantine)
+            else:
+                q = default_quarantine(p)
+            hits.extend(postscan.scan([p], quarantine=q, unmoved=unmoved))
+    except OSError as e:
+        # Fail closed: a file that could not be read is not a clean file.
+        print(f"apparatus postscan: could not read {e.filename}", file=sys.stderr)
+        return 2
+    # File names only. The matching text is never printed, so a leak is not
+    # repeated into a log or a terminal.
+    for f in hits:
+        print(f)
+    for f in unmoved:
+        print(f"apparatus postscan: could not quarantine {f}; it is still in place", file=sys.stderr)
+    return 1 if hits else 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="apparatus")
+    sub = ap.add_subparsers(dest="cmd")
+
+    p = sub.add_parser("selftest", help="prove the redactor")
+    p.set_defaults(fn=cmd_selftest)
+
+    p = sub.add_parser("redact", help="the redactor")
+    p.add_argument("--self-test", action="store_true", help="prove the redactor, then exit")
+    p.set_defaults(fn=cmd_redact)
+
+    p = sub.add_parser("render", help="print one transcript as redacted markdown")
+    p.add_argument("transcript")
+    p.set_defaults(fn=cmd_render)
+
+    p = sub.add_parser("postscan", help="scan for a surviving secret shape")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--quarantine", metavar="DIR", help="move hits here (default: <dir>-quarantine beside each path)")
+    g.add_argument("--report-only", action="store_true", help="report hits, move nothing")
+    p.add_argument("paths", nargs="+")
+    p.set_defaults(fn=cmd_postscan)
+
+    args = ap.parse_args(argv)
+    if not getattr(args, "fn", None):
+        ap.print_usage(sys.stderr)
+        return 2
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
