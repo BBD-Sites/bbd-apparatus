@@ -28,6 +28,26 @@ jobs:
           # Full history, because the name audit reads every commit's metadata.
           fetch-depth: 0
 
+      - name: the head is signed by a key in plugin/allowed_signers
+        # Every head pushed to next or stable is signed by the maintainers' key
+        # (docs/channels.md), and the bootstrap runs no other. This is the bootstrap's
+        # own check on the commit under test (the pull request's head, per the checkout
+        # above), so an unsigned tip goes red before anyone fast-forwards it. A commit
+        # from before the signers file shipped has nothing to check against and is
+        # noted, not failed.
+        run: |
+          set -u
+          if [ ! -f plugin/allowed_signers ]; then
+            echo "note: no plugin/allowed_signers at this commit (it predates the signing keys), so there is nothing to verify against"
+            exit 0
+          fi
+          if git -c gpg.ssh.allowedSignersFile="$PWD/plugin/allowed_signers" verify-commit HEAD; then
+            echo "HEAD $(git rev-parse HEAD) is signed by a key in plugin/allowed_signers"
+          else
+            echo "HEAD $(git rev-parse HEAD) is not signed by a key in plugin/allowed_signers; every head pushed to next or stable must be, so this cannot land until it is re-signed (docs/channels.md)"
+            exit 1
+          fi
+
       - name: shellcheck
         run: |
           command -v shellcheck >/dev/null || brew install shellcheck
