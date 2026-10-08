@@ -65,6 +65,18 @@ if extra:
     lines[1]["note"] = extra
 print("\n".join(json.dumps(l) for l in lines))' "$@" >"$tmp/transcripts/$1.jsonl"
 }
+# transcript2 SESSION OLD NEW: a transcript that began on build OLD and continued on
+# build NEW, with enough between them that OLD sits outside any tail read.
+transcript2() {
+  mkdir -p "$tmp/transcripts"
+  python3 -c '
+import json,sys
+sid, old, new = sys.argv[1:4]
+lines = [{"type": "user", "version": old, "sessionId": sid}]
+lines += [{"type": "assistant", "sessionId": sid, "text": "x" * 1000} for _ in range(300)]
+lines.append({"type": "user", "version": new, "sessionId": sid})
+print("\n".join(json.dumps(l) for l in lines))' "$@" >"$tmp/transcripts/$1.jsonl"
+}
 ctx() {
   local out
   out=$(h_run_out "$1")
@@ -123,16 +135,26 @@ case "$(uname)" in
 esac
 h_assert_eq "$nmode" 600 "notices.json is 0600"
 
-# 3. The running version comes from the transcript when it has one, and the CLI is
-# not asked. A newer line than the one in use is not offered: a sonnet session is
-# never told about an opus.
+# 3. The running version is the newest of the transcript's LAST version field and
+# what the CLI on PATH says. A session that began on an older build and was resumed
+# on the current one is not told to restart, and the once-per-version key is not
+# spent on it; a tail newer than the CLI is the one compared. A newer line than the
+# one in use is not offered: a sonnet session is never told about an opus.
 home=$(newhome transcript)
+transcript2 s-t0 2.0.0 "$latest_cli"
+start upgraded "$home" s-t0 resume claude-sonnet-5-5 "2.0.0 (Claude Code)"
+h_assert_hook_run upgraded "a session resumed after an upgrade"
+h_assert_empty "$(h_run_out upgraded)" "a session resumed after an upgrade: no notice from the head's older build"
+h_assert_empty "$(said "$home" | grep '^version:' || true)" "a session resumed after an upgrade: the once-per-version key is not spent"
+transcript s-t2 2.0.0
+start cli-newer "$home" s-t2 resume claude-sonnet-5-5 "$latest_cli (Claude Code)"
+h_assert_empty "$(h_run_out cli-newer)" "the CLI on PATH is newer than the transcript's tail: no notice"
 transcript s-t1 2.1.100
-start transcript "$home" s-t1 resume claude-sonnet-5-5 "$latest_cli (Claude Code)"
-h_assert_hook_run transcript "the transcript carries the version"
+start transcript "$home" s-t1 resume claude-sonnet-5-5 "2.0.0 (Claude Code)"
+h_assert_hook_run transcript "the transcript's tail is newer than the CLI"
 c=$(ctx transcript)
-if has "$c" "2.1.100"; then h_ok "the transcript carries the version: it is the one compared"; else h_fail "the transcript carries the version: it was not used"; fi
-h_assert_empty "$(h_calls claude)" "the transcript carries the version: the CLI is not asked"
+if has "$c" "2.1.100"; then h_ok "the transcript's tail is newer than the CLI: it is the one compared"; else h_fail "the transcript's tail is newer than the CLI: it was not used"; fi
+h_assert_eq "$(h_calls claude)" "--version" "the transcript's tail is newer than the CLI: the CLI was asked as well"
 if has "$c" "opus"; then h_fail "a sonnet session was told about an opus"; else h_ok "a sonnet session is not told about another line"; fi
 
 # 4. A version the CLI prints in an unexpected shape, or an unknown model, is not a

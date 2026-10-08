@@ -3,15 +3,15 @@
 section 12).
 
   notices.py running-version <input-file>
-      The Claude Code version the session runs, read from the transcript the hook
-      input names (its lines carry a `version` field), or nothing if the transcript
-      has none yet.
+      The Claude Code version the session runs, read from the LAST `version` field in
+      the tail of the transcript the hook input names, or nothing if there is none.
 
   notices.py due --input <input-file> --state <notices.json> --models <models.json>
                  --cli <claude-code.json> --compactions <dir> [--root <project root>]
-                 [--running-version <x.y.z>] [--kinds version,model,fresh-session]
+                 [--running-version <x.y.z>]... [--kinds version,model,fresh-session]
       Prints the text of every notice that is due, and records each one as said.
-      Nothing is printed when nothing is due.
+      Nothing is printed when nothing is due. --running-version may be given more
+      than once (the transcript's and the CLI's); the newest wins.
 
 Three notices, each said once per account home:
   version        a newer Claude Code than the one running; once per newer version
@@ -50,7 +50,10 @@ SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 # same model as the bare id; both suffixes are dropped before the lineup is searched.
 SUFFIX = re.compile(r"(-\d{8})?(\[[^\]]*\])?$")
 TEXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "text", "notices")
-TRANSCRIPT_LIMIT = 262144
+# How much of the transcript's tail is read for the running version. A session that
+# was upgraded mid-way carries two builds, the older first, so the LAST field is the
+# one that is true now, and the tail is where it is.
+TAIL_LIMIT = 262144
 
 
 def now() -> str:
@@ -74,17 +77,29 @@ def parse_version(text: str) -> tuple | None:
     return tuple(int(p) for p in m.group(1).split("."))
 
 
+def newest(candidates: list) -> str:
+    """The newest x.y.z among the candidates, or ""."""
+    best, best_t = "", None
+    for c in candidates:
+        t = parse_version(c or "")
+        if t and (best_t is None or t > best_t):
+            best, best_t = VERSION.match(c).group(1), t
+    return best
+
+
 def running_version(input_path: str) -> str:
-    """The `version` the transcript's lines carry, or ""."""
+    """The LAST `version` field in the transcript's tail, or ""."""
     path = hookio.field(hookio.load(input_path), "transcript_path")
     if not path or not os.path.isfile(path):
         return ""
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read(TRANSCRIPT_LIMIT)
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - TAIL_LIMIT))
+            text = f.read(TAIL_LIMIT).decode("utf-8", errors="replace")
     except OSError:
         return ""
-    for line in text.splitlines():
+    for line in reversed(text.splitlines()):
         try:
             doc = json.loads(line)
         except ValueError:
@@ -260,7 +275,7 @@ def due(opts: dict) -> str:
         sid = ""
     parts = []
     if "version" in kinds:
-        parts.append(version_notice(rec, opts.get("running", ""), load_json(opts["cli"])))
+        parts.append(version_notice(rec, newest(opts["running"]), load_json(opts["cli"])))
     if "model" in kinds:
         parts.append(model_notice(rec, hookio.field(doc, "model"), models))
     if "fresh-session" in kinds:
@@ -271,14 +286,16 @@ def due(opts: dict) -> str:
 
 def parse(argv: list) -> dict | None:
     opts = {"input": "", "state": "", "models": "", "cli": "", "compactions": "", "root": "",
-            "running": "", "kinds": list(KINDS)}
+            "running": [], "kinds": list(KINDS)}
     names = {"--input": "input", "--state": "state", "--models": "models", "--cli": "cli",
-             "--compactions": "compactions", "--root": "root", "--running-version": "running"}
+             "--compactions": "compactions", "--root": "root"}
     i = 0
     while i + 1 < len(argv):
         a, v = argv[i], argv[i + 1]
         if a in names:
             opts[names[a]] = v
+        elif a == "--running-version":
+            opts["running"].append(v)
         elif a == "--kinds":
             opts["kinds"] = [k.strip() for k in v.split(",") if k.strip()]
         else:
@@ -299,7 +316,7 @@ def main(argv: list) -> int:
         opts = parse(argv[1:])
         if opts is None:
             print("usage: notices.py due --input F --state F --models F --cli F --compactions DIR"
-                  " [--root DIR] [--running-version V] [--kinds a,b]", file=sys.stderr)
+                  " [--root DIR] [--running-version V]... [--kinds a,b]", file=sys.stderr)
             return 0
         text = due(opts)
         if text:
