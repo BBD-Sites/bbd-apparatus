@@ -2,9 +2,10 @@
 # What fail safe means (docs/launcher-contract.md section 6), one planted failure at
 # a time: offline, a checkout that cannot fast-forward, a fetch slower than its
 # bound, no checkout and no network, a held fetch lock, a corrupt config, a crashing
-# or chattering event, and an unsigned head where an allowed signers file exists. In every
-# case the launcher exits 0 and prints nothing but hook JSON, and the turn's
-# transcript is still queued or the last checkout still runs.
+# or chattering event, a store that cannot be reached, and an unsigned head where an
+# allowed signers file exists. In every case the launcher exits 0 and prints nothing
+# but hook JSON, and the turn's transcript is still queued or the last checkout
+# still runs.
 set -u
 # shellcheck source=lib/harness.sh
 . "$(dirname "$0")/lib/harness.sh"
@@ -364,6 +365,20 @@ h_hook_json Stop cwd="$repo" | h_launch with-token "$home" -- "$boot" stop-ship 
 if grep -rq "$body" "$H_TMP/run" "$base/state" "$base/queue"; then h_fail "a launcher run printed or logged the token"
 else h_ok "a launcher run with a token prints and logs none of it"; fi
 rm -f "$base/tenant.env"
+
+# The store cannot be reached (nothing listens at its address): the turn ends
+# normally, and the session stays queued with the attempt counted.
+closed_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+h_tenant_env "$home" tenant-a "BBD_TOKEN=$token" "BBD_INGEST_URL=http://127.0.0.1:$closed_port"
+mkdir -p "$H_TMP/transcripts"
+cp "$(h_repo_root)/tests/fixtures/transcripts/11111111-2222-4333-8444-555555555551.jsonl" "$H_TMP/transcripts/sid-down.jsonl"
+h_hook_json Stop cwd="$repo" session_id=sid-down transcript_path="$H_TMP/transcripts/sid-down.jsonl" \
+  | h_launch store-down "$home" -- "$boot" stop-ship plugin
+h_assert_hook_run store-down "store unreachable"
+if [ -f "$base/queue/sid-down.json" ]; then h_ok "store unreachable: the session stays queued"
+else h_fail "store unreachable: the session was dropped"; fi
+h_assert_eq "$(h_json_field attempts <"$base/queue/sid-down.json" 2>/dev/null)" 1 "store unreachable: the attempt is counted"
+rm -f "$base/tenant.env" "$base/queue/sid-down.json"
 
 # Signed heads. There is no switch to turn the check off: an allowed_signers file,
 # wherever the bootstrap looks for one, turns it on. With none anywhere, an unsigned
