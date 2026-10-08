@@ -50,3 +50,9 @@ neutral author and its committer is either that identity or GitHub's own web-flo
 identity; the audit accepts nothing else. The launcher's contract is
 `docs/launcher-contract.md`.
 What the redactor removes, and its two checks, are in `docs/redaction.md`.
+
+The keep-current notices compare a session against `data/models.json` (the model
+lineup, with release dates and context windows) and `data/claude-code.json` (the latest
+Claude Code version). Both are updated by a pull request here, never by a network call
+at session start, so every tenant learns of a newer model or version at the turn after
+the change lands on their channel.

@@ -258,3 +258,52 @@ raise the correction rate, so the cap is a feature, not a limit to raise.
 anything reaches the ledger or stdout, whether it came in the prompt, the rules file
 or the standing instructions. The event scripts never hold the token's value: the
 dispatcher parses `tenant.env` and exports no token to them.
+
+## 12. The session-start step
+
+`launcher/events/session-start.sh` runs on every SessionStart. With `source: compact`
+it runs the compact step (section 11) and prints nothing of its own. With every other
+source (startup, resume, clear, fork) it prints the keep-current notices that are due
+as one SessionStart object, or nothing at all. No rules, standing instructions or
+asks are injected here; the next prompt brings them. Nothing here reads a network:
+the two files compared against arrive with the checkout, and nothing reads the
+session API (`tests/test-no-session-api.sh`).
+
+**Three notices**, decided and recorded by `lib/notices.py`:
+
+| Notice | Fires when | Said once per |
+| --- | --- | --- |
+| version | the running Claude Code is older than `latest` in `data/claude-code.json` | home and newer version |
+| model | a model in the same line (opus, sonnet, haiku, fable) as the session's has a later release date in `data/models.json` | home and newer model |
+| fresh-session | the session's compaction count (`state/compactions/<session_id>`) has reached 3, or `context_tokens` is at least 60 percent of the model's `context_window`; the thresholds are the two constants at the top of `lib/notices.py`, his to change | home and session |
+
+The text of each is `text/notices/<name>.md`, filled in with the versions and names,
+and asks the model to say the one sentence in its first reply and then let it rest.
+
+**The running version** is the `version` field the transcript's lines carry, when the
+transcript the hook names exists (a resume or fork). Otherwise it is what `claude
+--version` on PATH prints, under a 2-second bound, and no version notice is given
+when neither answers or the answer is not `x.y.z`. The transcript is preferred
+because the CLI on PATH can be a different build from the one running the session
+(a desktop app bundles its own). The hook JSON itself carries no version field.
+
+**The model** is the hook's `model`, a dateless id; a dated id is compared by its
+dateless form. A model not listed in `data/models.json` gets no model notice and no
+context-share advice, because its line and window are not known, and a guess would
+nag. Only the same line is offered: a session on a sonnet is never told about an opus,
+because the line is what the person chose and what their plan is known to carry.
+
+**The compact source** folds the fresh-session advice into the compact step's single
+object, right after the compaction notice, because the dispatcher passes on exactly
+one object. The count is read after the compact step has written it, so the third
+compaction is the one that advises.
+
+**The record** is `state/notices.json` (0600): `said` maps a key
+(`version:<latest>`, `model:<newer id>`, `fresh-session:<session_id>`) to when it was
+said, and a notice is marked said when its text is produced. `stop` is a list of
+notice kinds, or `all`, that the person asked not to hear; a marker whose `notices`
+is `false` turns every notice off for that repository. Recording a stop from the
+person's own words is a later task; the record honours it now.
+
+`data/models.json` and `data/claude-code.json` are maintained by pull request. The
+fast-forward in section 3 is what carries a new entry to every tenant.
