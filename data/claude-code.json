@@ -3,5 +3,5 @@
   "read_on": "2026-10-07",
   "latest": "2.1.293",
   "source": "the published package record for @anthropic-ai/claude-code, read by a maintainer when this file is updated",
-  "how_updated": "By a pull request to this repository, the same way as data/models.json. The session-start step makes no network call of its own: it compares the running version with this number, and a tenant learns of a newer Claude Code at the turn after this file moves on their channel."
+  "how_updated": "By a pull request to this repository, the same way as data/models.json; .github/workflows/keep-current.yml checks this number against the npm registry weekly and goes red when it is behind. The session-start step reads no registry (a cloud session machine cannot reach one): it compares the running version with this number, and a tenant learns of a newer Claude Code at the turn after this file moves on their channel."
 }

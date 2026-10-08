@@ -287,8 +287,8 @@ when neither answers or the answer is not `x.y.z`. The transcript is preferred
 because the CLI on PATH can be a different build from the one running the session
 (a desktop app bundles its own). The hook JSON itself carries no version field.
 
-**The model** is the hook's `model`, a dateless id; a dated id is compared by its
-dateless form. A model not listed in `data/models.json` gets no model notice and no
+**The model** is the hook's `model`; a dated id (`-20250929`) or a long-context form
+(`[1m]`) is compared by its bare id. A model not listed in `data/models.json` gets no model notice and no
 context-share advice, because its line and window are not known, and a guess would
 nag. Only the same line is offered: a session on a sonnet is never told about an opus,
 because the line is what the person chose and what their plan is known to carry.
@@ -305,5 +305,12 @@ notice kinds, or `all`, that the person asked not to hear; a marker whose `notic
 is `false` turns every notice off for that repository. Recording a stop from the
 person's own words is a later task; the record honours it now.
 
-`data/models.json` and `data/claude-code.json` are maintained by pull request. The
-fast-forward in section 3 is what carries a new entry to every tenant.
+`data/models.json` and `data/claude-code.json` are maintained by pull request, not read
+from a registry at session start: the cloud session machine's network allowlist admits
+github.com and raw.githubusercontent.com only, so a registry read would fail there and
+the two kinds of session would disagree, while a file in the checkout rides the same
+fast-forward (section 3) that carries every other change to every tenant. The latest
+Claude Code version is checked against the npm registry weekly by
+`.github/workflows/keep-current.yml`, which goes red when the file is behind; that red
+run is the signal to open the data pull request. The model lineup has no machine-readable
+public source that carries release dates, so it is read from the model pages by hand.

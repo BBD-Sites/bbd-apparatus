@@ -1,0 +1,44 @@
+name: keep-current
+
+# The notices compare a session against two data files that move by pull request
+# (docs/launcher-contract.md section 12). This run is the owner of the first one:
+# every week it reads the npm registry's latest @anthropic-ai/claude-code and fails
+# when data/claude-code.json is behind, printing both versions. A red run is the
+# signal to open the data pull request; nothing here writes to the repository.
+#
+# data/models.json is not checked here: the public model pages carry the release
+# dates but offer no machine-readable list of them, and the Models API needs an
+# API key, which this public repository holds no secret for. It is read by hand.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  claude-code-version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: compare data/claude-code.json with the npm registry
+        run: |
+          set -u
+          published=$(curl -sS --max-time 20 https://registry.npmjs.org/@anthropic-ai/claude-code/latest \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))')
+          recorded=$(python3 -c 'import json; print(json.load(open("data/claude-code.json")).get("latest",""))')
+          echo "published: ${published:-unknown}"
+          echo "recorded:  ${recorded:-unknown}"
+          case "$published" in
+            ''|*[!0-9.]*) echo "could not read a version from the registry"; exit 1 ;;
+          esac
+          # Compared as numbers, field by field; a recorded value that is not x.y.z is behind.
+          if python3 -c 'import sys; v=lambda s: tuple(int(p) for p in s.split(".")) if s.replace(".","").isdigit() else (); sys.exit(0 if v(sys.argv[2]) and v(sys.argv[2]) >= v(sys.argv[1]) else 1)' "$published" "$recorded"; then
+            echo "data/claude-code.json is current"
+          else
+            echo "data/claude-code.json is behind: open a pull request setting latest to $published"
+            exit 1
+          fi
