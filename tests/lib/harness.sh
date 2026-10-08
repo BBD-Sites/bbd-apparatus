@@ -109,6 +109,12 @@ case "$sub" in fetch|clone)
     hang) exec sleep "${H_FAKE_GIT_HANG:-20}" ;;
   esac ;;
 esac
+# H_FAKE_GIT_BEFORE_PUSH=FILE runs FILE once, just before the first push, then removes
+# it: a stand-in for another session pushing in between, so a test can make a
+# push's lease go stale on purpose rather than hope for a race.
+if [ "$sub" = push ] && [ -n "${H_FAKE_GIT_BEFORE_PUSH:-}" ] && [ -f "$H_FAKE_GIT_BEFORE_PUSH" ]; then
+  mv -f "$H_FAKE_GIT_BEFORE_PUSH" "$H_FAKE_GIT_BEFORE_PUSH.ran" && bash "$H_FAKE_GIT_BEFORE_PUSH.ran" >/dev/null 2>&1
+fi
 SH
       # The launcher's URL is fixed and it ignores the home's git config, so the
       # fake git itself sends that URL to the local stand-in, and no test can ever
