@@ -1,0 +1,1 @@
+This session was just compacted, so the earlier conversation is now a summary, and the memory in the store is unaffected. Tell the person that in one sentence in your next reply. The rules and open asks below still stand; where the summary disagrees with a line below, the line below wins.
