@@ -3,7 +3,8 @@
 # can never reach this public history. This is the tracked-file half of that rule:
 # no tenant-token shape and no common credential shape in any tracked file.
 # Fixtures under tests/fixtures/ are allowlisted by path, because the redactor's
-# tests plant fake secrets there on purpose.
+# tests plant fake secrets there on purpose, and so is lib/redact.py alone, because
+# its self-test must carry the fake values it proves it masks.
 #
 # Hits are reported as file and count only, never the matching text, so a real
 # leak is not repeated into a public CI log.
@@ -17,14 +18,27 @@ TOKEN_RE='bbdt_[A-Za-z0-9]{40}'
 # quarantined there is refused here too.
 SECRET_RE='sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|pat-[a-z0-9]{2,6}-[0-9a-fA-F]{6,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY'
 FIXTURES=':(exclude)tests/fixtures/'
+SELFTEST=':(exclude,top)lib/redact.py'
 
 # scan REPO: one line per file with a hit; nothing means clean.
 scan() {
   local repo=$1
-  LC_ALL=C git -C "$repo" grep -c -I -E -e "$TOKEN_RE" -- . "$FIXTURES" 2>/dev/null \
+  LC_ALL=C git -C "$repo" grep -c -I -E -e "$TOKEN_RE" -- . "$FIXTURES" "$SELFTEST" 2>/dev/null \
     | sed 's/^/tenant-token shape in /' || true
-  LC_ALL=C git -C "$repo" grep -c -I -E -e "$SECRET_RE" -- . "$FIXTURES" 2>/dev/null \
+  LC_ALL=C git -C "$repo" grep -c -I -E -e "$SECRET_RE" -- . "$FIXTURES" "$SELFTEST" 2>/dev/null \
     | sed 's/^/credential shape in /' || true
+}
+
+# The post-scan itself over the same tracked files, report-only so nothing tracked
+# is ever moved: it is the check a capture must pass, so the repository passes it too.
+postscan_tracked() {
+  local repo=$1 files=() f
+  while IFS= read -r -d '' f; do
+    [ -f "$repo/$f" ] && files+=("$repo/$f")
+  done < <(git -C "$repo" ls-files -z -- . "$FIXTURES" "$SELFTEST")
+  [ "${#files[@]}" -gt 0 ] || return 0
+  PYTHONDONTWRITEBYTECODE=1 python3 "$repo/bin/apparatus" postscan --report-only "${files[@]}" 2>&1 \
+    | sed "s#^$repo/#credential shape (post-scan) in #" || true
 }
 
 # Planted values are assembled at run time, so no secret shape is ever committed
@@ -69,5 +83,8 @@ h_assert_eq "$n" "$i" "self-check: every credential shape is caught"
 
 out=$(scan "$(h_repo_root)")
 h_assert_empty "$out" "repository: no tenant token or credential shape in any tracked file"
+
+out=$(postscan_tracked "$(h_repo_root)")
+h_assert_empty "$out" "repository: the post-scan finds nothing in any tracked file"
 
 h_done
