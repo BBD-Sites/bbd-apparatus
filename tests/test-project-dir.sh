@@ -65,6 +65,31 @@ for d in "$H_TMP/plain" "$H_TMP/missing"; do
   h_assert_empty "$(h_sentinel)" "CLAUDE_PROJECT_DIR not a repository ($(basename "$d")): the shell cwd is not used instead"
 done
 
+# A skill stub runs the bootstrap from the session's own Bash tool: no hook JSON, and
+# a stdin that may never close, so it must not be read. With no CLAUDE_PROJECT_DIR,
+# the tool's working directory is the project; an unmarked one gets nothing.
+# shellcheck disable=SC2016  # the planted script expands its own variables
+h_apparatus_file launcher/events/skill.sh '#!/usr/bin/env bash
+printf "skill %s %s\n" "$1" "$BBD_PROJECT_ROOT" >>"$H_SENTINEL"'
+rm -f "$home/.claude/bbd-apparatus/state/fetch.stamp"
+h_sentinel_reset
+(cd "$b/sub" && h_launch skill "$home" -- "$boot" skill read-draft < <(sleep 6))
+h_assert_hook_run skill "a skill from the Bash tool"
+if [ "$(h_run_secs skill)" -lt 5 ]; then h_ok "a skill does not wait on a stdin that never closes"
+else h_fail "a skill waited on its stdin ($(h_run_secs skill)s)"; fi
+h_assert_eq "$(h_sentinel)" "skill read-draft $b" "a skill runs for the Bash tool's project, with its name"
+u=$(h_fake_repo unmarked)
+h_sentinel_reset
+(cd "$u" && h_launch skill-unmarked "$home" -- "$boot" skill read-draft </dev/null)
+h_assert_hook_run skill-unmarked "a skill in an unmarked repository"
+h_assert_empty "$(h_sentinel)" "a skill in an unmarked repository does nothing"
+h_sentinel_reset
+(cd "$u" && h_launch skill-env "$home" CLAUDE_PROJECT_DIR="$b" -- "$boot" skill read-draft </dev/null)
+h_assert_eq "$(h_sentinel)" "skill read-draft $b" "a skill still prefers CLAUDE_PROJECT_DIR"
+h_sentinel_reset
+(cd "$b" && h_launch skill-bad "$home" -- "$boot" skill '../x' </dev/null)
+h_assert_empty "$(h_sentinel)" "a skill name that is a path does nothing"
+
 # A dead working directory: the shell starts in a directory that was deleted.
 dead="$H_TMP/dead"
 mkdir -p "$dead"

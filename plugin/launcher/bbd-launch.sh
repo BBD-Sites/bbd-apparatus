@@ -111,8 +111,14 @@ bbd_env_get() {
 }
 
 # 1. Root and marker. The root is the harness's project dir, else the hook JSON's cwd,
-# never the shell's own directory, which can belong to a different repository.
+# never the shell's own directory, which can belong to a different repository. The
+# one exception is a skill: it is run by the session's own Bash tool, which starts in
+# the session's project and brings no hook JSON, so there the directory is the
+# project.
 dir=${CLAUDE_PROJECT_DIR:-}
+if [ -z "$dir" ] && [ "$event" = skill ]; then
+  dir=$PWD
+fi
 if [ -z "$dir" ] && [ -n "$input" ]; then
   dir=$(printf '%s' "$input" | python3 -c '
 import json, sys
@@ -245,7 +251,11 @@ if bbd_lock "$base/state/fetch.lock"; then
     [ -d "$co/.git" ] || git init -q "$co" >>"$_bbd_log" 2>&1
     # git itself, not a function, runs in the background, so the kill reaches the
     # fetch and does not leave it running on after this turn has moved on.
-    if bbd_bounded "$BBD_FETCH_BOUND" git -C "$co" -c core.hooksPath=/dev/null \
+    # The repository is public, so the fetch never needs to ask for anything; a
+    # credential or passphrase prompt from the tenant's own git setup could otherwise
+    # surface in their terminal, so prompting is switched off.
+    if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=${GIT_SSH_COMMAND:-ssh -o BatchMode=yes} \
+        bbd_bounded "$BBD_FETCH_BOUND" git -C "$co" -c core.hooksPath=/dev/null \
         fetch -q --no-tags --depth=1 "$BBD_URL" "$channel"; then
       bbd_git reset -q --hard FETCH_HEAD >>"$_bbd_log" 2>&1 \
         && bbd_git clean -q -ffdx >>"$_bbd_log" 2>&1

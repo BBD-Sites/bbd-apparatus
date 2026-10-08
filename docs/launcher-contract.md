@@ -42,6 +42,10 @@ resolved with `--show-toplevel`. A worktree counts as a project: its `.git` is a
 not a directory, so the check asks git rather than looking for `.git/`, and the vault
 marker is committed, so every worktree carries it.
 
+A skill is the one exception: its stub runs the bootstrap from the session's own Bash
+tool, which starts in the session's project and brings no hook JSON, so with no
+`CLAUDE_PROJECT_DIR` its working directory is taken as the project.
+
 If the shell's working directory no longer exists, the bootstrap first moves to
 `$HOME`, so that no git or python call fails on a dead directory.
 

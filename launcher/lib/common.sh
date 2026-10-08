@@ -116,14 +116,17 @@ bbd_tenant_env() {
   return 0
 }
 
-# bbd_project_root INPUT-FILE: prints the work tree's top level, from
+# bbd_project_root INPUT-FILE [EVENT]: prints the work tree's top level, from
 # CLAUDE_PROJECT_DIR, else the hook JSON's cwd, and never from the shell's own
-# directory, which can belong to another repository. A worktree counts: git is asked,
-# because a worktree's .git is a file, not a directory.
+# directory, which can belong to another repository; except for a skill, which the
+# session's own Bash tool runs from the project with no hook JSON. A worktree counts:
+# git is asked, because a worktree's .git is a file, not a directory.
 bbd_project_root() {
-  local input=$1 dir
+  local input=$1 event=${2:-} dir
   dir=${CLAUDE_PROJECT_DIR:-}
-  if [ -z "$dir" ] && [ -f "$input" ]; then
+  if [ -z "$dir" ] && [ "$event" = skill ]; then
+    dir=$PWD
+  elif [ -z "$dir" ] && [ -f "$input" ]; then
     dir=$(python3 "$BBD_CHECKOUT/lib/hookio.py" field "$input" cwd 2>/dev/null)
   fi
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
@@ -167,15 +170,15 @@ print(rules)
   [ -n "$BBD_MARKER_TENANT" ]
 }
 
-# bbd_gate DELIVERY INPUT-FILE: returns 0 only when this event is ours to act on, the
+# bbd_gate DELIVERY INPUT-FILE [EVENT]: returns 0 only when this event is ours to act on, the
 # same rule as the bootstrap's (docs/launcher-contract.md sections 3 and 4). Sets
 # BBD_PROJECT_ROOT, BBD_TENANT, BBD_CHANNEL and BBD_WHERE.
 bbd_gate() {
-  local delivery=$1 input=$2
+  local delivery=$1 input=$2 event=${3:-}
   bbd_paths
   [ -z "${BBD_NESTED:-}" ] || return 1
   case "$delivery" in plugin|repo) ;; *) return 1 ;; esac
-  BBD_PROJECT_ROOT=$(bbd_project_root "$input") || return 1
+  BBD_PROJECT_ROOT=$(bbd_project_root "$input" "$event") || return 1
   [ -n "$BBD_PROJECT_ROOT" ] || return 1
   bbd_marker "$BBD_PROJECT_ROOT" || return 1
   bbd_tenant_env "$BBD_ENV_FILE"

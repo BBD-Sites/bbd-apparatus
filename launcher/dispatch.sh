@@ -28,7 +28,7 @@ esac
 script=$BBD_CHECKOUT/launcher/events/$BBD_EVENT.sh
 [ -f "$script" ] || exit 0
 
-bbd_gate "$BBD_DELIVERY" "$BBD_INPUT" || exit 0
+bbd_gate "$BBD_DELIVERY" "$BBD_INPUT" "$BBD_EVENT" || exit 0
 bbd_state_dirs || exit 0
 export BBD_EVENT BBD_DELIVERY BBD_INPUT BBD_PROJECT_ROOT BBD_TENANT BBD_CHANNEL \
   BBD_WHERE BBD_BASE BBD_LOG BBD_CHECKOUT
