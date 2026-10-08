@@ -205,7 +205,8 @@ start dated "$home" s-dt startup claude-sonnet-4-5-20250929 "$latest_cli (Claude
 if has "$(ctx dated)" "claude-sonnet-5-5"; then h_ok "a dated model id: the model notice names the newest sonnet"; else h_fail "a dated model id: no model notice"; fi
 
 # 5. Fresh-session advice after three compactions, folded into the compact step's
-# one object with the compaction notice and the rules; said once per session.
+# one object with the compaction notice and the rules; said at the third, not at the
+# fourth or fifth, and again at the sixth, because the count rose to the next step.
 home=$(newhome compact)
 start c1 "$home" s-c compact claude-opus-5-5 "$latest_cli (Claude Code)"
 start c2 "$home" s-c compact claude-opus-5-5 "$latest_cli (Claude Code)"
@@ -221,25 +222,36 @@ if has "$c" "compacted" && has "$c" "RULE-ALPHA"; then h_ok "the third compactio
 if has "$c" "fresh session" && has "$c" "3 times"; then h_ok "the third compaction: the advice is folded in and names the count"; else h_fail "the third compaction: no fresh-session advice"; fi
 h_assert_eq "$(cat "$home/.claude/bbd-apparatus/state/compactions/s-c")" 3 "the third compaction: the count is 3"
 start c4 "$home" s-c compact claude-opus-5-5 "$latest_cli (Claude Code)"
-if has "$(ctx c4)" "fresh session"; then h_fail "the fourth compaction: the advice was repeated"; else h_ok "the fourth compaction: the advice is not repeated in this session"; fi
+if has "$(ctx c4)" "fresh session"; then h_fail "the fourth compaction: the advice was repeated"; else h_ok "the fourth compaction: the advice is not repeated at the same step"; fi
 if has "$(ctx c4)" "compacted"; then h_ok "the fourth compaction: the compact injection still runs"; else h_fail "the fourth compaction: the compact injection stopped"; fi
+start c5 "$home" s-c compact claude-opus-5-5 "$latest_cli (Claude Code)"
+if has "$(ctx c5)" "fresh session"; then h_fail "the fifth compaction: the advice was repeated"; else h_ok "the fifth compaction: still silent"; fi
+start c6 "$home" s-c compact claude-opus-5-5 "$latest_cli (Claude Code)"
+c=$(ctx c6)
+if has "$c" "fresh session" && has "$c" "6 times"; then h_ok "the sixth compaction: the advice is said again, because the count rose to the next step"; else h_fail "the sixth compaction: the advice was not said again"; fi
 start c-resume "$home" s-c resume claude-opus-5-5 "$latest_cli (Claude Code)"
 if has "$(ctx c-resume)" "fresh session"; then h_fail "a resume of the compacted session: the advice was repeated"; else h_ok "a resume of the compacted session: nothing more is said"; fi
 start c-other "$home" s-other compact claude-opus-5-5 "$latest_cli (Claude Code)"
 if has "$(ctx c-other)" "fresh session"; then h_fail "another session's first compaction: advice leaked across sessions"; else h_ok "another session's first compaction: no advice"; fi
 
 # 6. Fresh-session advice when the context is past sixty percent of the model's
-# window, on resume or fork where the harness reports it; once per session; never
-# for a model whose window is unknown.
+# window, on resume or fork where the harness reports it; once per 20-point band
+# past the threshold (said at 60, again at 80), never for a model whose window is
+# unknown.
 home=$(newhome context)
 start ctx-low "$home" s-x resume claude-opus-5-5 "$latest_cli (Claude Code)" context_tokens=100000
 h_assert_empty "$(h_run_out ctx-low)" "context at ten percent: nothing is said"
-start ctx-high "$home" s-x fork claude-opus-5-5 "$latest_cli (Claude Code)" context_tokens=700000
+start ctx-high "$home" s-x fork claude-opus-5-5 "$latest_cli (Claude Code)" context_tokens=620000
 h_assert_hook_run ctx-high "context past sixty percent"
 c=$(ctx ctx-high)
-if has "$c" "fresh session" && has "$c" "70 percent"; then h_ok "context past sixty percent: the advice names the share used"; else h_fail "context past sixty percent: no advice"; fi
-start ctx-again "$home" s-x resume claude-opus-5-5 "$latest_cli (Claude Code)" context_tokens=800000
-h_assert_empty "$(h_run_out ctx-again)" "context still high: not said twice in one session"
+if has "$c" "fresh session" && has "$c" "62 percent"; then h_ok "context past sixty percent: the advice names the share used"; else h_fail "context past sixty percent: no advice"; fi
+start ctx-again "$home" s-x resume claude-opus-5-5 "$latest_cli (Claude Code)" context_tokens=700000
+h_assert_empty "$(h_run_out ctx-again)" "context at seventy percent: still in the same band, not said again"
+start ctx-band2 "$home" s-x resume claude-opus-5-5 "$latest_cli (Claude Code)" context_tokens=810000
+c=$(ctx ctx-band2)
+if has "$c" "fresh session" && has "$c" "81 percent"; then h_ok "context at eighty-one percent: the next band, said again"; else h_fail "context at eighty-one percent: not said again"; fi
+start ctx-band2b "$home" s-x resume claude-opus-5-5 "$latest_cli (Claude Code)" context_tokens=850000
+h_assert_empty "$(h_run_out ctx-band2b)" "context at eighty-five percent: the same band, not said again"
 start ctx-unknown "$home" s-y resume some-other-model "$latest_cli (Claude Code)" context_tokens=900000000
 h_assert_empty "$(h_run_out ctx-unknown)" "an unknown model's window: no advice from a guess"
 

@@ -22,7 +22,9 @@ Four notices, each said once per account home:
   version        a newer Claude Code than the one running; once per newer version
   model          a newer model in the same line as the one in use; once per newer model
   fresh-session  the session has compacted FRESH_COMPACTIONS times, or its context is
-                 past FRESH_CONTEXT share of the model's window; once per session
+                 past FRESH_CONTEXT share of the model's window; once per session and
+                 step, so it is said again when the count rises to the next multiple
+                 or the share enters the next FRESH_BAND
   ship           a notice the ship step left under `pending` (lib/ship.py): a refused
                  key, a held-back or lost session; once per key
 
@@ -49,6 +51,9 @@ import hookio  # noqa: E402
 # line, nothing else reads them.
 FRESH_COMPACTIONS = 3
 FRESH_CONTEXT = 0.60
+# The advice is repeated only when the count rises: at every multiple of
+# FRESH_COMPACTIONS, and at every FRESH_BAND of the window past FRESH_CONTEXT.
+FRESH_BAND = 0.20
 
 KINDS = ("version", "model", "fresh-session", "ship")
 STOPPABLE = ("version", "model", "fresh-session")
@@ -292,16 +297,18 @@ def compaction_count(compactions_dir: str, sid: str) -> int:
 
 def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir: str,
                  delivery: str) -> str:
+    """Said once per session and step: the key carries the trigger and the step it
+    reached, so the advice comes at compaction 3, 6, 9 and at 60, 80, 100 percent,
+    and not at every compaction or resume in between."""
     if not sid:
         return ""
-    key = "fresh-session:" + sid
-    if key in rec.said:
-        return ""
-    reason = ""
+    key = reason = ""
     count = compaction_count(compactions_dir, sid)
     if count >= FRESH_COMPACTIONS:
-        reason = "has been compacted %d times" % count
-    else:
+        key = "fresh-session:%s:compactions:%d" % (sid, count // FRESH_COMPACTIONS)
+        if key not in rec.said:
+            reason = "has been compacted %d times" % count
+    if not reason:
         tokens = doc.get("context_tokens")
         # An integer in the hook JSON; a string of digits is read the same way.
         if isinstance(tokens, str) and tokens.isdigit():
@@ -310,7 +317,10 @@ def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir
         window = current.get("context_window") if current else None
         if (isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0
                 and isinstance(window, int) and window > 0 and tokens / window >= FRESH_CONTEXT):
-            reason = "is past %d percent of its context" % int(100 * tokens / window)
+            share = tokens / window
+            key = "fresh-session:%s:context:%d" % (sid, int((share - FRESH_CONTEXT) / FRESH_BAND))
+            if key not in rec.said:
+                reason = "is past %d percent of its context" % int(100 * share)
     if not reason:
         return ""
     text = template("fresh-session", reason=reason,

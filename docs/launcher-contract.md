@@ -276,7 +276,7 @@ session API (`tests/test-no-session-api.sh`).
 | ship | the ship step left a notice under `pending` in the record (a refused key, a session held back by the post-scan, a session lost before it was sent; `lib/ship.py` writes them) | home and key |
 | version | the running Claude Code is older than `latest` in `data/claude-code.json` | home and newer version |
 | model | a model in the same line (opus, sonnet, haiku, fable) as the session's has a later release date in `data/models.json` | home and newer model |
-| fresh-session | the session's compaction count (`state/compactions/<session_id>`) has reached 3, or `context_tokens` is at least 60 percent of the model's `context_window`; the thresholds are the two constants at the top of `lib/notices.py`, his to change | home and session |
+| fresh-session | the session's compaction count (`state/compactions/<session_id>`) has reached 3, or `context_tokens` is at least 60 percent of the model's `context_window`; the thresholds are the two constants at the top of `lib/notices.py`, his to change | home, session and step: said again only when the count rises to the next multiple of 3 (at 3, 6, 9) or the share enters the next 20-point band past 60 (at 60, 80, 100), the key being `fresh-session:<session_id>:<trigger>:<step>` |
 
 The text of each is `text/notices/<name>.md`, filled in with the versions and names,
 and asks the model to say the one sentence in its first reply and then let it rest.
@@ -305,8 +305,8 @@ one object. The count is read after the compact step has written it, so the thir
 compaction is the one that advises.
 
 **The record** is `state/notices.json` (0600): `said` maps a key
-(`version:<latest>`, `model:<newer id>`, `fresh-session:<session_id>`, or a ship
-key such as `quarantine:<session_id>`) to when it was said, and a notice is marked
+(`version:<latest>`, `model:<newer id>`, `fresh-session:<session_id>:<trigger>:<step>`,
+or a ship key such as `quarantine:<session_id>`) to when it was said, and a notice is marked
 said when its text is produced. `pending` is the ship step's, `{key: {text, at}}`;
 this step takes from it and never adds to it, and keeps every other key in the file
 as it found it. `stop` is a list of notice kinds, or `all`, that the person asked not
