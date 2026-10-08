@@ -66,6 +66,29 @@ for t in "$fixtures"/*.jsonl; do
 done
 if [ "$n" -ge 2 ]; then h_ok "$n golden files compared"; else h_fail "expected at least 2 golden files, found $n"; fi
 
+# Every marker the redactor can emit appears in some golden file: a shape the
+# fixtures skip is a shape parity never proves. The labels are read from
+# lib/redact.py itself (each SIMPLE label plus every literal marker in redact()),
+# so a new pattern with no fixture fails here until a fixture plants it.
+labels=$(cd "$repo/lib" && python3 -c '
+import inspect, re, redact
+src = inspect.getsource(redact.redact)
+names = [n for n, _ in redact.SIMPLE] + re.findall(r"\[REDACTED:([a-z0-9-]+)\]", src)
+print("\n".join(dict.fromkeys(names)))')
+nlabels=$(printf '%s\n' "$labels" | grep -c . || true)
+if [ "$nlabels" -ge 15 ]; then h_ok "$nlabels marker labels read from lib/redact.py"
+else h_fail "expected at least 15 marker labels in lib/redact.py, read $nlabels"; fi
+missing=""
+while IFS= read -r label; do
+  [ -n "$label" ] || continue
+  if ! cat "$golden"/*.md | grep -q -F "[REDACTED:$label]"; then
+    missing="$missing $label"
+  fi
+done <<LABELS
+$labels
+LABELS
+h_assert_empty "$missing" "every redaction marker appears in a golden file${missing:+ (missing:$missing)}"
+
 # Where the original renderer is available (a maintainer's machine), render the
 # fixtures with it again, so a change on either side is caught. Skipped elsewhere.
 if [ -n "${APPARATUS_ORIGINAL_RENDERER:-}" ] && [ -f "$APPARATUS_ORIGINAL_RENDERER" ]; then
