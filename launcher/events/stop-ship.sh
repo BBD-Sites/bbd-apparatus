@@ -40,7 +40,7 @@ SCAN_BOUND=15
 ship() { python3 "$ship_py" "$@"; }
 
 # 1. The pointer first.
-current=$(ship queue-pointer "$queue" "$BBD_INPUT" "$BBD_WHERE")
+current=$(ship queue-pointer "$queue" "$BBD_INPUT" "$BBD_WHERE" "$BBD_PROJECT_ROOT" "$BBD_TENANT")
 
 # One ship step at a time per home: two draining one queue would send a session
 # twice. A run that finds the lock held leaves its pointer for the holder or the
@@ -58,7 +58,7 @@ trap 'exit 0' INT TERM HUP
 # runner's) calls its body unreachable as SC2317, newer as SC2329.
 # shellcheck disable=SC2317,SC2329
 ship_step() {
-  local sha ok_file redactor_sha sid transcript out rc hit stamp result i post_timeout ready=() stamps=() args=()
+  local door drain sha ok_file redactor_sha sid transcript out rc hit stamp result i post_timeout ready=() stamps=() args=()
   # 2. The self-test, once per checkout commit. The pass file also holds the sha256
   # of the redactor it proved, so a redactor edited in place after the pass is tested
   # again. A checkout that is not a repository has no commit to key on, so it is
@@ -84,7 +84,18 @@ ship_step() {
   fi
 
   # 3. Render and post-scan each session to try.
-  for sid in $(ship drain-list "$queue" "$current" "$DRAIN_MAX"); do
+  # The door decides which queued entries this firing may take. The HTTP door posts
+  # under this home's one tenant.env, and a home with a token acts only in that
+  # tenant's repositories, so it drains the whole home queue. The captures door
+  # writes into this session's own repository, so it takes only the entries queued
+  # for this repository and this tenant; another project's wait for its own Stop.
+  door=$(ship door "$env_file")
+  if [ "$door" = captures ]; then
+    drain=$(ship drain-list "$queue" "$current" "$DRAIN_MAX" "$BBD_PROJECT_ROOT" "$BBD_TENANT")
+  else
+    drain=$(ship drain-list "$queue" "$current" "$DRAIN_MAX")
+  fi
+  for sid in $drain; do
     # The budget holds back old entries only: the firing session is always tried,
     # and comes first.
     if [ "$sid" != "$current" ] && [ $((SECONDS + RENDER_BOUND + SCAN_BOUND)) -gt "$SHIP_BUDGET" ]; then
@@ -145,7 +156,7 @@ ship_step() {
   [ "${#ready[@]}" -gt 0 ] || return 0
 
   # 4. The door.
-  case "$(ship door "$env_file")" in
+  case "$door" in
     post)
       result=shipped
       post_timeout=$(ship post-timeout)

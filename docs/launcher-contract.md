@@ -194,9 +194,13 @@ CFG/bbd-apparatus/
 ```
 
 A queue record is a pointer, not a copy:
-`{session_id, transcript_path, where, first_seen, attempts}`. It holds no transcript
-text, so nothing unredacted is duplicated; redaction runs when the queue is drained, and
-one record per session always points at the latest transcript.
+`{session_id, transcript_path, where, first_seen, attempts}`, and, when the checkout
+writes it, `project_root`, `repo` (git's common directory, shared by every worktree
+of one repository) and `tenant` (the vault marker's). The bootstrap, which runs with
+no checkout, writes the first five only; for such a record the repository is read
+from the transcript's own working directory. It holds no transcript text, so nothing
+unredacted is duplicated; redaction runs when the queue is drained, and one record per
+session always points at the latest transcript.
 
 Every Stop ship sends its own session first, then drains up to 5 older records,
 oldest first. If a record's transcript is gone when it is drained, that loss is
@@ -235,7 +239,7 @@ anything off the machine. In order:
    keeps the whole queue, and records `selftest-failed` and a notice once for that
    commit.
 4. **Drain.** This session first, then the five oldest queued sessions by first
-   seen. Each is
+   seen that this firing's door may take (step 5). Each is
    rendered with `apparatus render` (redacted before truncation and again over the
    whole document) into `state/outbox/`, NUL bytes are removed (the post-scan skips a
    file holding one as binary; removing one can only join text into a longer shape),
@@ -261,6 +265,21 @@ anything off the machine. In order:
    (`docs/ingest-contract.md`); with no `BBD_INGEST_URL` the store is not connected,
    nothing is sent and every pointer waits. No token (a cloud machine, or a home with
    no install) means the captures branch below.
+   - The door is chosen before the drain, because it decides which entries may be
+     taken. The queue is per account home and can hold sessions from several
+     projects.
+   - The captures door writes into this session's own repository, so it takes only
+     entries queued for this repository (worktrees of one repository count as one)
+     and, where a tenant was recorded, for this marker's tenant. Every other entry
+     stays queued for its own project's next Stop and never takes one of the five
+     places. A home with no install accepts any tenant's marked repository, so
+     without this rule one project's Stop would push another tenant's sessions into
+     its own repository and store.
+   - The HTTP door drains the whole home queue. That is safe because a home with a
+     token holds one tenant's key, and the gate lets such a home act only in that
+     tenant's repositories, so every entry is that tenant's. As a second check, an
+     entry recorded for a tenant other than `tenant.env`'s `BBD_TENANT` is never
+     posted under this key; it stays queued and is logged.
 
 Every rendered copy in `state/outbox/` is removed when the step ends, however it
 ends. Notices are recorded in `state/notices.json` under `pending`, keyed so each is

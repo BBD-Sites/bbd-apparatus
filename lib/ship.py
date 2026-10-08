@@ -4,8 +4,10 @@ the said-once notices the ship step leaves for the next session start.
 launcher/events/stop-ship.sh holds the order (docs/launcher-contract.md section 10);
 each step it takes is one subcommand here, so every step can be tested alone.
 
-  ship.py queue-pointer <queue> <input-file> <where>   print the session id queued
-  ship.py drain-list <queue> <current> <max>           the ids to ship this firing
+  ship.py queue-pointer <queue> <input-file> <where> [<project> <tenant>]
+                                                       print the session id queued
+  ship.py drain-list <queue> <current> <max> [<project> <tenant>]
+                                                       the ids to ship this firing
   ship.py post-timeout                                 seconds one post may take
   ship.py get <queue> <sid> <field>                    one field of a pointer
   ship.py stamp <queue> <sid>                          which write of a pointer this is
@@ -25,8 +27,12 @@ copy was being sent keeps it queued, so that turn is sent too.
 A pointer holds no transcript text, so nothing unredacted is ever copied: redaction
 runs when the queue is drained. One record per session, replaced in place, always
 points at the latest transcript and keeps when it was first seen and how many times
-shipping it was tried. The bootstrap writes the same record, with the same rules,
-when no checkout exists yet; tests/test-fail-safe.sh holds the two to one shape.
+shipping it was tried. The bootstrap writes the same five fields, with the same
+rules, when no checkout exists yet; tests/test-fail-safe.sh holds the two to one
+shape. The checkout's record adds three: the project root the hook fired for, the
+repository it belongs to (git's common directory, which every worktree of one
+repository shares) and the vault marker's tenant. The captures door ships an entry
+only into the repository it came from, under the tenant it was queued for.
 
 The token is read here from tenant.env and nowhere else in the ship step: it is
 never an argument (a process listing would show it), never in the environment of a
@@ -94,7 +100,54 @@ def valid_sid(sid) -> bool:
 
 # ---------------------------------------------------------------------------- queue
 
-def queue_pointer(queue: str, hook: dict, where: str) -> str | None:
+def repo_id(path: str) -> str:
+    """The repository a directory belongs to: git's common directory, made absolute,
+    which every worktree of one repository shares and no other repository has. Empty
+    if the directory is not in a repository."""
+    if not path or not os.path.isdir(path):
+        return ""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        r = subprocess.run(["git", "-C", path, "rev-parse", "--git-common-dir"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    out = r.stdout.decode("utf-8", "replace").strip()
+    if r.returncode != 0 or not out:
+        return ""
+    return os.path.realpath(os.path.join(path, out))
+
+
+def transcript_cwd(path: str) -> str:
+    """The working directory a transcript records, for a pointer the bootstrap wrote
+    with no project: the first line that carries a cwd."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f):
+                if n > 200:
+                    break
+                try:
+                    doc = json.loads(line)
+                except ValueError:
+                    continue
+                cwd = doc.get("cwd") if isinstance(doc, dict) else None
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        pass
+    return ""
+
+
+def entry_repo(rec: dict) -> str:
+    """The repository an entry was queued for: recorded, or for a bootstrap pointer
+    that holds none, the repository of its transcript's own working directory."""
+    repo = rec.get("repo")
+    if isinstance(repo, str) and repo:
+        return repo
+    return repo_id(transcript_cwd(str(rec.get("transcript_path") or "")))
+
+
+def queue_pointer(queue: str, hook: dict, where: str, project: str = "", tenant: str = "") -> str | None:
     """Write or refresh queue/<session_id>.json; returns the session id, or None if the
     hook named no usable session (an id that is not a plain token could name a path)."""
     sid, path = hook.get("session_id"), hook.get("transcript_path")
@@ -110,24 +163,40 @@ def queue_pointer(queue: str, hook: dict, where: str) -> str | None:
         "first_seen": old.get("first_seen") or now(),
         "attempts": attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0,
     }
+    if project:
+        record["project_root"] = project
+        record["repo"] = repo_id(project)
+        record["tenant"] = tenant
     write_json(target, record)
     return sid
 
 
-def drain_list(queue: str, current: str, limit: int) -> list:
+def drain_list(queue: str, current: str, limit: int, repo: str | None = None,
+               tenant: str | None = None) -> list:
     """The queued sessions to try this firing: the firing session first, then the
     `limit` oldest by first seen (then by name, so the order is stable). The firing
     session goes first so that old entries that keep failing, or a store that hangs
     on them, can never use up the step's time before the turn that just ended is
     sent. A cap keeps one firing short after a long time offline; the rest wait for
-    the next turn."""
+    the next turn.
+
+    With `repo` (the captures door), only entries queued for that repository, and
+    under `tenant` where one was recorded, are listed: the captures door writes into
+    the firing session's own repository, so another project's entry stays queued for
+    that project's own next Stop. Entries that do not match never take a slot."""
     entries = []
     for name in os.listdir(queue):
         sid = name[:-5] if name.endswith(".json") else ""
         if not valid_sid(sid) or sid == current:
             continue
-        first = read_json(os.path.join(queue, name)).get("first_seen")
-        entries.append((str(first or ""), sid))
+        rec = read_json(os.path.join(queue, name))
+        if repo is not None:
+            if not repo or entry_repo(rec) != repo:
+                continue
+            rec_tenant = rec.get("tenant")
+            if isinstance(rec_tenant, str) and rec_tenant and rec_tenant != tenant:
+                continue
+        entries.append((str(rec.get("first_seen") or ""), sid))
     out = [sid for _, sid in sorted(entries)[:limit]]
     if valid_sid(current) and os.path.isfile(os.path.join(queue, current + ".json")):
         out.insert(0, current)
@@ -262,6 +331,14 @@ def post(env_path: str, state: str, queue: str, sid: str, expect: str, body_path
     env = tenant_env(env_path)
     token, base = env.get("BBD_TOKEN", ""), env.get("BBD_INGEST_URL", "")
     rec = read_json(os.path.join(queue, sid + ".json"))
+    # One home holds one tenant's token, and the launcher's gate lets a home with a
+    # token act only in that tenant's repositories, so every entry here is this
+    # tenant's. An entry recorded for another tenant (tenant.env rewritten for a
+    # different tenant after it was queued) is never sent under this key.
+    rec_tenant = rec.get("tenant")
+    if isinstance(rec_tenant, str) and rec_tenant and rec_tenant != env.get("BBD_TENANT", ""):
+        log("%s was queued for another tenant; not sent under this home's key, kept" % sid)
+        return "kept"
     url = ingest_url(base, sid) if token and base else None
     if not url:
         notice(state, "ingest-url-refused", "The store address in this machine's settings is not https, so nothing was sent. Run the installer again.")
@@ -445,15 +522,17 @@ def captures(project: str, queue: str, state: str, items: list) -> str:
 
 def main(argv: list) -> int:
     cmd, args = (argv[0], argv[1:]) if argv else ("", [])
-    if cmd == "queue-pointer" and len(args) == 3:
-        queue, input_file, where = args
+    if cmd == "queue-pointer" and len(args) in (3, 5):
+        queue, input_file, where = args[:3]
+        project, tenant = (args[3], args[4]) if len(args) == 5 else ("", "")
         hook = read_json(input_file)
         if hook:
-            sid = queue_pointer(queue, hook, where)
+            sid = queue_pointer(queue, hook, where, project, tenant)
             if sid:
                 print(sid)
-    elif cmd == "drain-list" and len(args) == 3:
-        for sid in drain_list(args[0], args[1], int(args[2])):
+    elif cmd == "drain-list" and len(args) in (3, 5):
+        repo, tenant = (repo_id(args[3]), args[4]) if len(args) == 5 else (None, None)
+        for sid in drain_list(args[0], args[1], int(args[2]), repo, tenant):
             print(sid)
     elif cmd == "post-timeout" and not args:
         print(POST_TIMEOUT)

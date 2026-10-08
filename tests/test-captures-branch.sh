@@ -147,4 +147,45 @@ else h_fail "remote unreachable: the session was dropped"; fi
 case "$(captured)" in *c7.md*) h_fail "remote unreachable: the file reached the remote anyway" ;;
   *) h_ok "remote unreachable: nothing was pushed" ;; esac
 
+# Two tenants' marked repositories on one home with no install. A session in A is
+# left queued, and B's next Stop must not carry it into B's captures branch: the
+# hook acts only on the project it was fired for, and each tenant's store holds only
+# its own sessions. A's pointer waits, and A's own next Stop ships it to A.
+shared=$(h_fake_home shared)
+squeue="$shared/.claude/bbd-apparatus/queue"
+ra=$(h_fake_repo tenant-a-vault)
+h_mark "$ra" tenant-a
+rb=$(h_fake_repo tenant-b-vault)
+h_mark "$rb" tenant-b
+captured_in() { git -C "$1" ls-tree --name-only -r refs/heads/captures 2>/dev/null | tr '\n' ' '; }
+
+# A's session ends while A's remote is out of reach, so its pointer stays queued.
+git -C "$ra" remote set-url origin "$H_TMP/no-such-remote.git"
+transcript xa1
+ship xa1 "$shared" "$ra" xa1
+git -C "$ra" remote set-url origin "$H_TMP/tenant-a-vault.git"
+if [ -f "$squeue/xa1.json" ]; then h_ok "two tenants: A's session is queued"; else h_fail "two tenants: A's session was not queued"; fi
+# A pointer the bootstrap wrote before any checkout existed carries no project; its
+# transcript's own working directory says where it belongs.
+mkdir -p "$H_TMP/transcripts"
+sed "s#/srv/projects/demo-notes#$ra#g" "$fixture" >"$H_TMP/transcripts/xa0.jsonl"
+python3 -c 'import json,sys; json.dump({"session_id": "xa0", "transcript_path": sys.argv[1], "where": "desktop",
+  "first_seen": "2026-01-01T00:00:00Z", "attempts": 0}, open(sys.argv[2], "w"))' "$H_TMP/transcripts/xa0.jsonl" "$squeue/xa0.json"
+
+transcript xb1
+ship xb1 "$shared" "$rb" xb1
+h_assert_hook_run xb1 "two tenants, B fires"
+h_assert_eq "$(captured_in "$H_TMP/tenant-b-vault.git")" "captures/xb1.md " "two tenants: B's captures branch holds only B's session"
+if [ -f "$squeue/xa1.json" ] && [ -f "$squeue/xa0.json" ]; then h_ok "two tenants: A's pointers are still queued after B's Stop"
+else h_fail "two tenants: B's Stop took A's pointers"; fi
+h_assert_empty "$(captured_in "$H_TMP/tenant-a-vault.git")" "two tenants: nothing reached A's remote from B's Stop"
+
+transcript xa2
+ship xa2 "$shared" "$ra" xa2
+h_assert_eq "$(captured_in "$H_TMP/tenant-a-vault.git")" "captures/xa0.md captures/xa1.md captures/xa2.md " \
+  "two tenants: A's next Stop ships A's queued sessions to A"
+h_assert_eq "$(captured_in "$H_TMP/tenant-b-vault.git")" "captures/xb1.md " "two tenants: B's branch is still only B's"
+if [ -f "$squeue/xa1.json" ] || [ -f "$squeue/xa0.json" ]; then h_fail "two tenants: A's pointers are still queued after A shipped"
+else h_ok "two tenants: A's pointers leave the queue once A ships them"; fi
+
 h_done

@@ -335,6 +335,20 @@ if [ "$total" -le 125 ]; then h_ok "a hanging store: the step ended inside its b
 else h_fail "a hanging store: the step ran ${total}s"; fi
 rm -f "$queue"/hang*.json
 
+# 11c. An entry queued for another tenant is never posted under this home's key.
+forget_requests
+transcript other1 >/dev/null
+python3 -c 'import json,sys; json.dump({"session_id": "other1", "transcript_path": sys.argv[1], "where": "desktop",
+  "first_seen": "2025-12-01T00:00:00Z", "attempts": 0, "tenant": "tenant-z", "project_root": "/elsewhere", "repo": "/elsewhere/.git"},
+  open(sys.argv[2], "w"))' "$H_TMP/transcripts/other1.jsonl" "$queue/other1.json"
+transcript s11 >/dev/null
+ship other-tenant s11
+if paths | grep -qx /v1/captures/other1; then h_fail "another tenant's entry was posted under this home's key"
+else h_ok "another tenant's entry is not posted under this home's key"; fi
+if queued other1; then h_ok "another tenant's entry stays queued"; else h_fail "another tenant's entry was dropped"; fi
+if paths | grep -qx /v1/captures/s11; then h_ok "this tenant's session is still posted"; else h_fail "this tenant's session was not posted"; fi
+rm -f "$queue/other1.json"
+
 # 12. A failing redactor self-test blocks every post and keeps the queue: nothing
 # leaves the machine on a redactor that cannot prove itself.
 h_apparatus_file lib/redact.py "$(cat "$src/lib/redact.py")
@@ -343,11 +357,14 @@ def self_test() -> int:  # planted by the test: a redactor that cannot prove its
     return 1"
 rm -f "$base/state/fetch.stamp"
 transcript s7 >/dev/null
+transcript keep1 >/dev/null
+python3 -c 'import json,sys; json.dump({"session_id": "keep1", "transcript_path": sys.argv[1], "where": "desktop",
+  "first_seen": "2025-12-01T00:00:00Z", "attempts": 0}, open(sys.argv[2], "w"))' "$H_TMP/transcripts/keep1.jsonl" "$queue/keep1.json"
 forget_requests
 ship selftest-fails s7
 h_assert_hook_run selftest-fails "a failing self-test"
 h_assert_eq "$(requests)" 0 "a failing self-test: nothing is posted"
-if queued s7 && queued old1; then h_ok "a failing self-test: the queue is kept"; else h_fail "a failing self-test: the queue was not kept"; fi
+if queued s7 && queued keep1; then h_ok "a failing self-test: the queue is kept"; else h_fail "a failing self-test: the queue was not kept"; fi
 h_assert_eq "$(status)" "selftest-failed" "a failing self-test: the state says selftest-failed"
 bad=$(git -C "$base/checkout-stable" rev-parse HEAD)
 if [ -f "$base/state/selftest-$bad.ok" ]; then h_fail "a failing self-test was cached as a pass"
