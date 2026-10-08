@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "read_on": "2026-10-07",
+  "source": "https://platform.claude.com/docs/en/models/<id>/overview, one page per model; the id, release date and context window are copied from there, and so is the purpose line of each line's newest model, the only one a notice ever shows; a legacy model's purpose line is a short paraphrase of its page",
+  "how_updated": "By a pull request to this repository. The launcher fast-forwards its checkout before every event, so every tenant learns of a newer model at their next turn. The notice compares the session's model against the newest in the same line, by release date; a model that is not listed here is not compared.",
+  "models": [
+    {"id": "claude-fable-5-1", "name": "Claude Fable 5.1", "line": "fable", "released": "2026-09-01", "context_window": 1000000, "for": "demanding reasoning and long-horizon agentic work"},
+    {"id": "claude-fable-5", "name": "Claude Fable 5", "line": "fable", "released": "2026-06-09", "context_window": 1000000, "for": "demanding reasoning and long-horizon agentic work"},
+    {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "line": "opus", "released": "2026-09-22", "context_window": 1000000, "for": "long-running agentic coding and knowledge work"},
+    {"id": "claude-opus-5", "name": "Claude Opus 5", "line": "opus", "released": "2026-07-24", "context_window": 1000000, "for": "complex agentic coding and enterprise work"},
+    {"id": "claude-opus-4-8", "name": "Claude Opus 4.8", "line": "opus", "released": "2026-05-28", "context_window": 1000000, "for": "long-horizon agentic work, knowledge work and memory"},
+    {"id": "claude-opus-4-7", "name": "Claude Opus 4.7", "line": "opus", "released": "2026-04-16", "context_window": 1000000, "for": "long-horizon agentic work, knowledge work, vision and memory"},
+    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "line": "opus", "released": "2026-02-05", "context_window": 1000000, "for": "agentic work with adaptive thinking"},
+    {"id": "claude-opus-4-5", "name": "Claude Opus 4.5", "line": "opus", "released": "2025-11-24", "context_window": 200000, "for": "agentic work"},
+    {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "line": "sonnet", "released": "2026-09-28", "context_window": 1000000, "for": "the best combination of speed and intelligence"},
+    {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "line": "sonnet", "released": "2026-06-30", "context_window": 1000000, "for": "speed and intelligence, near-Opus quality on coding and agentic work"},
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "line": "sonnet", "released": "2026-02-17", "context_window": 1000000, "for": "everyday coding and agentic work"},
+    {"id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5", "line": "sonnet", "released": "2025-09-29", "context_window": 200000, "for": "everyday coding and agentic work"},
+    {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "line": "haiku", "released": "2026-10-07", "context_window": 1000000, "for": "high-volume, latency-sensitive tasks such as classification, extraction and routing"},
+    {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "line": "haiku", "released": "2025-10-15", "context_window": 200000, "for": "fast, low-cost simple tasks"}
+  ]
+}

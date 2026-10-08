@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "read_on": "2026-10-07",
+  "latest": "2.1.293",
+  "source": "the published package record for @anthropic-ai/claude-code, read by a maintainer when this file is updated",
+  "how_updated": "By a pull request to this repository, the same way as data/models.json. The session-start step makes no network call of its own: it compares the running version with this number, and a tenant learns of a newer Claude Code at the turn after this file moves on their channel."
+}
