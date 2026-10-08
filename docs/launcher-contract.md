@@ -80,16 +80,26 @@ Mac has none.
      record to the queue and exits 0; every other event exits 0 silently.
 5. **Signed heads (optional).** Required only where `tenant.env` sets
    `BBD_REQUIRE_SIGNED_HEAD=1`; the default is off until the maintainers' signing keys
-   exist. When required, `git -c gpg.ssh.allowedSignersFile=<file> verify-commit HEAD`
-   must pass, with the `allowed_signers` file beside the plugin's launcher directory or
-   at `CFG/bbd-apparatus/allowed_signers`, or the checkout returns to the last
-   verified commit (`state/verified-<channel>`); with none, the run behaves as if
+   exist. When required, `git -c gpg.ssh.allowedSignersFile=<file> verify-commit`
+   must pass on the fetched head before it is checked out, and on the checkout before
+   it runs, with the `allowed_signers` file beside the plugin's launcher directory or
+   at `CFG/bbd-apparatus/allowed_signers`; otherwise the checkout returns to the last
+   verified commit (`state/verified-<channel>`), and with none, the run behaves as if
    there were no checkout. One push to `stable` runs on every tenant's next turn, so a
    head that no maintainer key signed is not run.
-6. **Hand-off.** `exec` the checkout's `launcher/dispatch.sh` with the event, the
-   delivery and the saved stdin as a file:
-   `dispatch.sh <event> <delivery> <input-file> [skill name]`. The dispatcher removes
-   the file when the event is done.
+6. **Hand-off.** Run the checkout's `launcher/dispatch.sh` as a child, with the event,
+   the delivery and the saved stdin as a file:
+   `dispatch.sh <event> <delivery> <input-file> [skill name]`. It is a child, not an
+   `exec`, so a crash, an exit 2 or a hang in the checkout's code still ends in exit 0:
+   its stdout is collected and only one JSON object of it is passed on (a skill's
+   body is plain text and passes as it is), it is bounded at 600 seconds as an outer
+   net for the asynchronous entry, and it is killed if the bootstrap is.
+
+Every git call on the checkout names the checkout's repository outright, so git never
+searches upward into a repository that happens to contain the home, and reads none of
+the tenant's own git config; inherited `GIT_DIR` and its relatives are cleared first.
+A checkout that is not a usable repository, or that cannot be reset, is removed and
+fetched again on the next turn.
 
 A session that sets `BBD_NESTED` (the reader step starts one for itself) exits 0
 before any of this, so its hooks neither recurse nor ship the reader's own session.

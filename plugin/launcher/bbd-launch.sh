@@ -22,13 +22,24 @@ BBD_FETCH_BOUND=3   # seconds a fetch may take before this turn runs the last ch
 BBD_STAMP_FRESH=20  # seconds after a fetch in which another is skipped (one per turn)
 BBD_LOCK_STALE=60   # seconds after which a fetch lock is taken to be a dead holder's
 BBD_LOG_MAX=262144  # bytes of launcher.log kept before it is rotated
+# An outer bound on the checkout's own code, for the one entry the harness does not
+# time (the asynchronous Stop ship); every synchronous entry has a tighter harness
+# timeout, and the checkout keeps its own tighter bounds inside this one.
+BBD_DISPATCH_BOUND=600
 
 _bbd_log=""
 _bbd_lock=""
+_bbd_child=""
+_bbd_watcher=""
+_bbd_tmp=""
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 bbd_finish() {
+  if [ -n "$_bbd_child" ]; then kill -TERM "$_bbd_child" 2>/dev/null; fi
+  if [ -n "$_bbd_watcher" ]; then kill -TERM "$_bbd_watcher" 2>/dev/null; fi
   if [ -n "$_bbd_lock" ]; then rm -rf "$_bbd_lock" 2>/dev/null; _bbd_lock=""; fi
+  # shellcheck disable=SC2086  # two known paths with no spaces of their own
+  if [ -n "$_bbd_tmp" ]; then rm -f $_bbd_tmp 2>/dev/null; fi
   exit 0
 }
 
@@ -49,9 +60,14 @@ set -E
 trap 'bbd_finish' EXIT
 trap 'bbd_log "unhandled failure at line $LINENO: $BASH_COMMAND"' ERR
 trap 'exit 0' INT TERM HUP
-# Lets a failed exec return here, so it can still exit 0 instead of the shell dying.
-shopt -s execfail
 exec 2>/dev/null
+# A hook started from inside a git hook inherits GIT_DIR and its relatives; with them
+# set, every git call below would act on that repository instead of the one named.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
+  GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+# An exported CDPATH makes `cd` print the directory, which would corrupt $(cd ...).
+unset CDPATH
 # The stock Mac python writes its bytecode cache under the home; a repository the
 # gate refuses must leave nothing anywhere, so no cache is written at all.
 export PYTHONDONTWRITEBYTECODE=1
@@ -188,6 +204,7 @@ chmod 700 "$base" "$base/state" "$base/queue" 2>/dev/null
 _bbd_log=$base/state/launcher.log
 exec 2>>"$_bbd_log"
 
+
 bbd_now() { date +%s; }
 
 # A mkdir lock: atomic on every filesystem. The holder writes its start time inside;
@@ -220,49 +237,111 @@ bbd_unlock() {
   if [ -n "$_bbd_lock" ]; then rm -rf "$_bbd_lock" 2>/dev/null; _bbd_lock=""; fi
 }
 
-# bbd_bounded SECONDS CMD...: run CMD, killing it after SECONDS. macOS has no
-# `timeout`, so the bound is a watcher process. Neither process keeps this script's
-# stdout open, because the harness waits for stdout to close before it reads it.
+# bbd_bounded SECONDS OUT CMD...: run CMD with its stdout to the file OUT, killing it
+# after SECONDS. macOS has no `timeout`, so the bound is a watcher process. Neither
+# process holds this script's stdout, because the harness waits for stdout to close.
+# If this script is itself killed, the EXIT trap kills both.
 bbd_bounded() {
-  local secs=$1 pid watcher rc
-  shift
-  "$@" </dev/null >>"$_bbd_log" 2>&1 &
-  pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null ) \
+  local secs=$1 out=$2 rc
+  shift 2
+  "$@" </dev/null >>"$out" 2>>"$_bbd_log" &
+  _bbd_child=$!
+  ( sleep "$secs"; kill -TERM "$_bbd_child" 2>/dev/null; sleep 1; kill -KILL "$_bbd_child" 2>/dev/null ) \
     </dev/null >/dev/null 2>&1 &
-  watcher=$!
-  if wait "$pid"; then rc=0; else rc=$?; fi
-  kill -TERM "$watcher" 2>/dev/null || true
-  wait "$watcher" 2>/dev/null || true
+  _bbd_watcher=$!
+  if wait "$_bbd_child"; then rc=0; else rc=$?; fi
+  kill -TERM "$_bbd_watcher" 2>/dev/null || true
+  wait "$_bbd_watcher" 2>/dev/null || true
+  _bbd_child=""
+  _bbd_watcher=""
   return "$rc"
 }
 
-# The checkout's own git calls never run a hook from the tenant's global git config.
-bbd_git() { git -C "$co" -c core.hooksPath=/dev/null "$@"; }
+# Every git call on the checkout names its repository outright, so git never goes
+# looking upward: a broken checkout inside a home tracked by its own repository
+# would otherwise reset that repository. The tenant's own git config is not read
+# either (no URL rewrite, prompt, hook or background daemon of theirs applies to a
+# public fetch); proxy and certificate settings still come from the environment.
+bbd_git_env() {
+  env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 "$@"
+}
+bbd_git() {
+  bbd_git_env git --git-dir="$co/.git" --work-tree="$co" -C "$co" \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 "$@"
+}
 
-# 4. Fast-forward. Resetting to FETCH_HEAD is both the fast-forward and the repair of
-# a drifted or diverged checkout: the checkout always lands on the channel head.
+# 5 (setup). Signed heads. OFF by default, and on only where tenant.env sets
+# BBD_REQUIRE_SIGNED_HEAD=1, until the maintainers' signing keys exist and an
+# allowed_signers file ships beside this script's directory (or in
+# CFG/bbd-apparatus/). When on, a head no allowed key signed is never checked out,
+# and never run: the checkout stays at, or returns to, the last head that verified,
+# and with none, this run behaves as if there were no checkout at all.
+signed=""
+signers=""
+case "$(bbd_env_get BBD_REQUIRE_SIGNED_HEAD)" in
+  1|true|yes)
+    signed=1
+    for f in "$here/../allowed_signers" "$base/allowed_signers"; do
+      if [ -s "$f" ]; then signers=$f; break; fi
+    done
+    ;;
+esac
+verified=$base/state/verified-$channel
+bbd_verify() { # REV
+  [ -n "$signers" ] && bbd_git -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >>"$_bbd_log" 2>&1
+}
+
+# 4. Fast-forward, under the lock; every write to the checkout happens here. Resetting
+# to FETCH_HEAD is both the fast-forward and the repair of a drifted or diverged
+# checkout: the checkout always lands on the channel head. The reset runs only when
+# the head moved or the tree drifted, so a run already reading the checkout is
+# disturbed only by a real release.
 co=$base/checkout-$channel
 stamp=$base/state/fetch.stamp
 if bbd_lock "$base/state/fetch.lock"; then
+  # Holding the lock means no other launcher is in git here, so any git lock file
+  # left is from a run that was killed; left in place it would fail every later turn.
+  rm -f "$co"/.git/*.lock "$co"/.git/refs/heads/*.lock 2>/dev/null
+  if [ -e "$co" ] && ! bbd_git rev-parse --git-dir >/dev/null 2>&1; then
+    bbd_log "the $channel checkout is not a usable repository; starting it again"
+    rm -rf "$co"
+  fi
   last=$(cat "$stamp" 2>/dev/null || true)
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   if [ $(($(bbd_now) - last)) -ge "$BBD_STAMP_FRESH" ]; then
-    [ -d "$co/.git" ] || git init -q "$co" >>"$_bbd_log" 2>&1
-    # git itself, not a function, runs in the background, so the kill reaches the
-    # fetch and does not leave it running on after this turn has moved on.
-    # The repository is public, so the fetch never needs to ask for anything; a
-    # credential or passphrase prompt from the tenant's own git setup could otherwise
-    # surface in their terminal, so prompting is switched off.
-    if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=${GIT_SSH_COMMAND:-ssh -o BatchMode=yes} \
-        bbd_bounded "$BBD_FETCH_BOUND" git -C "$co" -c core.hooksPath=/dev/null \
+    [ -d "$co/.git" ] || bbd_git_env git init -q "$co" >>"$_bbd_log" 2>&1
+    # git itself, not a shell function, is what runs in the background (env execs
+    # it), so the kill reaches the fetch and nothing of it outlives this turn.
+    if bbd_bounded "$BBD_FETCH_BOUND" "$_bbd_log" \
+        env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git --git-dir="$co/.git" \
+        -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 \
         fetch -q --no-tags --depth=1 "$BBD_URL" "$channel"; then
-      bbd_git reset -q --hard FETCH_HEAD >>"$_bbd_log" 2>&1 \
-        && bbd_git clean -q -ffdx >>"$_bbd_log" 2>&1
+      head_now=$(bbd_git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null || true)
+      head_new=$(bbd_git rev-parse -q --verify 'FETCH_HEAD^{commit}' 2>/dev/null || true)
+      drift=$(bbd_git status --porcelain --untracked-files=all 2>/dev/null || echo unreadable)
+      if [ -n "$signed" ] && ! bbd_verify FETCH_HEAD; then
+        bbd_log "the $channel head is not signed by an allowed key; not checked out"
+      elif [ -n "$head_new" ] && { [ "$head_now" != "$head_new" ] || [ -n "$drift" ]; }; then
+        if ! { bbd_git reset -q --hard FETCH_HEAD >>"$_bbd_log" 2>&1 \
+               && bbd_git clean -q -ffdx >>"$_bbd_log" 2>&1; }; then
+          # A checkout that cannot be reset is in an unknown state; the next turn
+          # starts it again rather than run it.
+          bbd_log "could not reset the $channel checkout; it will be fetched again"
+          rm -rf "$co"
+        fi
+      fi
     else
       bbd_log "fetch of $channel failed or took over ${BBD_FETCH_BOUND}s; running the last checkout"
     fi
     bbd_now >"$stamp"
+  fi
+  if [ -n "$signed" ] && [ -d "$co/.git" ] && ! bbd_verify HEAD; then
+    good=$(cat "$verified" 2>/dev/null || true)
+    case "$good" in
+      *[!0-9a-f]*|'') ;;
+      *) bbd_git reset -q --hard "$good" >>"$_bbd_log" 2>&1 \
+           && bbd_git clean -q -ffdx >>"$_bbd_log" 2>&1 ;;
+    esac
   fi
   bbd_unlock
 fi
@@ -271,35 +350,14 @@ valid=""
 if bbd_git rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1 && [ -f "$co/launcher/dispatch.sh" ]; then
   valid=1
 fi
-
-# 5. Signed heads. OFF by default, and on only where tenant.env sets
-# BBD_REQUIRE_SIGNED_HEAD=1, until the maintainers' signing keys exist and an
-# allowed_signers file ships beside this script (or in CFG/bbd-apparatus/). When on,
-# a head no allowed key signed is not run: the checkout returns to the last head that
-# verified, and with none, this run behaves as if there were no checkout at all.
-case "$(bbd_env_get BBD_REQUIRE_SIGNED_HEAD)" in
-  1|true|yes)
-    signers=""
-    for f in "$here/../allowed_signers" "$base/allowed_signers"; do
-      if [ -s "$f" ]; then signers=$f; break; fi
-    done
-    verified=$base/state/verified-$channel
-    bbd_verify() {
-      [ -n "$signers" ] && bbd_git -c gpg.ssh.allowedSignersFile="$signers" verify-commit HEAD >>"$_bbd_log" 2>&1
-    }
-    if [ -n "$valid" ] && bbd_verify; then
-      bbd_git rev-parse HEAD >"$verified" 2>/dev/null
-    else
-      valid=""
-      good=$(cat "$verified" 2>/dev/null || true)
-      if [ -n "$good" ] && bbd_git reset -q --hard "$good" >>"$_bbd_log" 2>&1 && bbd_verify \
-          && [ -f "$co/launcher/dispatch.sh" ]; then
-        valid=1
-      fi
-      bbd_log "the $channel head is not signed by an allowed key; refused"
-    fi
-    ;;
-esac
+if [ -n "$valid" ] && [ -n "$signed" ]; then
+  if bbd_verify HEAD; then
+    bbd_git rev-parse HEAD >"$verified" 2>/dev/null
+  else
+    valid=""
+    bbd_log "the $channel checkout is not signed by an allowed key; refused"
+  fi
+fi
 
 # No runnable checkout (first run offline, or a refused head). Only the transcript
 # matters then: Stop ship records a pointer to it, which the checkout's ship step
@@ -345,15 +403,36 @@ os.replace(tmp, target)
   exit 0
 fi
 
-# 6. Hand-off. The saved stdin goes over as a file in the state directory (0700); the
-# dispatcher removes it when the event is done.
+# 6. Hand-off. The dispatcher runs as a bounded child, not by exec, so the guarantees
+# above outlive any bug in the checkout's code: a crash, an exit 2 or a hang there
+# still ends here with exit 0. Its stdout goes to a file and only one JSON object of
+# it is passed on as hook output (a skill's body is plain text for the model, so it
+# passes as it is). The saved stdin and the output are both in the state directory
+# (0700) and removed afterwards.
 in_file=$(mktemp "$base/state/hook.XXXXXX" 2>/dev/null) || exit 0
+out_file=$(mktemp "$base/state/out.XXXXXX" 2>/dev/null) || { rm -f "$in_file"; exit 0; }
+_bbd_tmp="$in_file $out_file"
 printf '%s' "$input" >"$in_file"
 if [ "$event" = skill ]; then
-  exec "${BASH:-bash}" "$co/launcher/dispatch.sh" skill "$delivery" "$in_file" "$skill_name"
+  bbd_bounded "$BBD_DISPATCH_BOUND" "$out_file" "${BASH:-bash}" "$co/launcher/dispatch.sh" \
+    skill "$delivery" "$in_file" "$skill_name" || bbd_log "the dispatcher failed for skill $skill_name"
+  cat "$out_file" 2>/dev/null
 else
-  exec "${BASH:-bash}" "$co/launcher/dispatch.sh" "$event" "$delivery" "$in_file"
+  bbd_bounded "$BBD_DISPATCH_BOUND" "$out_file" "${BASH:-bash}" "$co/launcher/dispatch.sh" \
+    "$event" "$delivery" "$in_file" || bbd_log "the dispatcher failed for $event"
+  if [ -s "$out_file" ]; then
+    python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        doc = json.loads(f.read())
+except Exception:
+    doc = None
+if isinstance(doc, dict):
+    print(json.dumps(doc))
+else:
+    sys.stderr.write("bootstrap: dropped dispatcher output that was not one JSON object\n")
+' "$out_file" 2>>"$_bbd_log"
+  fi
 fi
-rm -f "$in_file"
-bbd_log "could not start the dispatcher"
 exit 0

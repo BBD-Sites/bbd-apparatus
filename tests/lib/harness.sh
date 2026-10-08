@@ -110,6 +110,17 @@ case "$sub" in fetch|clone)
   esac ;;
 esac
 SH
+      # The launcher's URL is fixed and it ignores the home's git config, so the
+      # fake git itself sends that URL to the local stand-in, and no test can ever
+      # reach the real repository. The call log keeps the URL as the launcher wrote it.
+      printf 'from=%q\nto=%q\n' "$H_APPARATUS_URL" "file://$tmp/apparatus.git"
+      cat <<'SH'
+args=()
+for a in "$@"; do
+  if [ "$a" = "$from" ]; then args+=("$to"); else args+=("$a"); fi
+done
+set -- ${args[@]+"${args[@]}"}
+SH
       printf 'exec %q "$@"\n' "$real"
     else
       cat <<'SH'
@@ -230,10 +241,10 @@ h_done() {
 }
 
 # ---------------------------------------------------------------------------------
-# Launcher helpers. The bootstrap is run exactly as shipped: its URL is fixed, so a
-# fake home's git config maps that URL to a local bare repository (insteadOf), and
-# every launch runs under `env -i`, so nothing from the machine running the tests
-# (its own Claude Code variables, its real home and config) reaches the launcher.
+# Launcher helpers. The bootstrap is run exactly as shipped: its URL is fixed, so the
+# fake git maps that URL to a local bare repository, and every launch runs under
+# `env -i`, so nothing from the machine running the tests (its own Claude Code
+# variables, its real home and config) reaches the launcher.
 
 H_APPARATUS_URL="https://github.com/Personal-Tooling/bbd-apparatus.git"
 
@@ -244,9 +255,11 @@ h_bootstrap() {
 
 # h_fake_apparatus: a stand-in for the public apparatus repository, built from this
 # working copy's launcher/, lib/ and bin/, with branches stable and next on a bare
-# remote at $H_TMP/apparatus.git. Prints the source work tree.
+# remote at $H_TMP/apparatus.git. Prints the source work tree. It installs the fake
+# git first, because only the fake git sends the launcher's URL to the stand-in.
 h_fake_apparatus() {
   local tmp src bare repo
+  h_fake_bin git
   tmp=$(h_tmpdir)
   repo=$(h_repo_root)
   src="$tmp/apparatus-src"
@@ -284,14 +297,12 @@ printf '%s %s %s %s\\n' '$1' \"\$BBD_EVENT\" \"\$BBD_PROJECT_ROOT\" \"\$BBD_WHER
 exit 0" "${3:-stable}"
 }
 
-# h_fake_home NAME: an account home at $H_TMP/NAME with an empty .claude, whose git
-# config sends the apparatus URL to the local bare repository. Prints its path.
+# h_fake_home NAME: an account home at $H_TMP/NAME with an empty .claude. Prints its
+# path.
 h_fake_home() {
-  local tmp home
-  tmp=$(h_tmpdir)
-  home="$tmp/$1"
+  local home
+  home="$(h_tmpdir)/$1"
   mkdir -p "$home/.claude"
-  git config -f "$home/.gitconfig" "url.file://$tmp/apparatus.git.insteadOf" "$H_APPARATUS_URL"
   printf '%s\n' "$home"
 }
 

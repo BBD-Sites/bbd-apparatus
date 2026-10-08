@@ -207,6 +207,108 @@ h_assert_eq "$(h_run_out noisy-session-start | h_json_field hookSpecificOutput)"
 if grep -q 'dropped output' "$base/state/launcher.log" 2>/dev/null; then h_ok "dropped output is logged"
 else h_fail "dropped output was not logged"; fi
 
+# A broken dispatcher (an exit 2, which would block the turn, with raw text on
+# stdout, or a syntax error): the bootstrap still exits 0 and passes on only hook JSON.
+expire_stamp
+h_apparatus_file launcher/dispatch.sh '#!/usr/bin/env bash
+echo "raw text from a broken dispatcher"
+exit 2'
+h_hook_json Hook cwd="$repo" | h_launch broken-dispatch "$home" -- "$boot" prompt plugin
+h_assert_hook_run broken-dispatch "a dispatcher that exits 2 and prints raw text"
+h_assert_empty "$(h_run_out broken-dispatch)" "a broken dispatcher's raw text never reaches stdout"
+expire_stamp
+h_apparatus_file launcher/dispatch.sh '#!/usr/bin/env bash
+if then fi ((('
+h_hook_json Hook cwd="$repo" | h_launch syntax-dispatch "$home" -- "$boot" stop-gate plugin
+h_assert_hook_run syntax-dispatch "a dispatcher with a syntax error"
+
+# The harness kills a hook at its timeout: the dispatcher under it goes too.
+expire_stamp
+# shellcheck disable=SC2016  # the planted script expands its own variables
+h_apparatus_file launcher/dispatch.sh '#!/usr/bin/env bash
+printf "%s %s\n" "$$" "$PPID" >"$H_SENTINEL.pids"
+exec sleep 30'
+rm -f "$H_TMP/sentinel.log.pids"
+( h_hook_json Hook cwd="$repo" | h_launch term "$home" -- "$boot" prompt plugin ) &
+launcher_job=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -s "$H_TMP/sentinel.log.pids" ] && break
+  sleep 0.5
+done
+read -r dispatch_pid boot_pid <"$H_TMP/sentinel.log.pids"
+kill -TERM "$boot_pid"
+wait "$launcher_job"
+h_assert_hook_run term "a bootstrap killed by the harness"
+sleep 1
+if kill -0 "$dispatch_pid" 2>/dev/null; then
+  h_fail "a killed bootstrap left its dispatcher running"
+  kill -KILL "$dispatch_pid" 2>/dev/null
+else
+  h_ok "a killed bootstrap takes its dispatcher with it"
+fi
+expire_stamp
+h_apparatus_file launcher/dispatch.sh "$(cat "$(h_repo_root)/launcher/dispatch.sh")"
+
+# A checkout whose .git is broken, in a home that is itself a git repository (a
+# dotfiles home): git must not walk up and reset the home. The checkout is rebuilt.
+home4=$(h_fake_home h4)
+printf 'keep me\n' >"$home4/.bashrc"
+h_git init -q "$home4"
+git -C "$home4" add .bashrc
+h_git -C "$home4" commit -q -m "chore: dotfiles"
+home_head=$(git -C "$home4" rev-parse HEAD)
+h_plant_event v7 prompt
+h_hook_json Hook cwd="$repo" | h_launch home-repo-seed "$home4" -- "$boot" prompt plugin
+co4="$home4/.claude/bbd-apparatus/checkout-stable"
+for broken in file dir; do
+  rm -rf "$co4/.git"
+  if [ "$broken" = file ]; then printf 'gitdir: /nowhere\n' >"$co4/.git"; else mkdir -p "$co4/.git"; fi
+  rm -f "$home4/.claude/bbd-apparatus/state/fetch.stamp"
+  h_sentinel_reset
+  h_hook_json Hook cwd="$repo" | h_launch "home-repo-$broken" "$home4" -- "$boot" prompt plugin
+  h_assert_hook_run "home-repo-$broken" "a broken checkout .git ($broken) inside a home repository"
+  h_assert_eq "$(git -C "$home4" rev-parse HEAD)" "$home_head" "broken checkout .git ($broken): the home repository's HEAD is untouched"
+  if [ -f "$home4/.bashrc" ] && [ ! -e "$home4/launcher" ]; then h_ok "broken checkout .git ($broken): the home's files are untouched"
+  else h_fail "broken checkout .git ($broken): the home's files were changed"; fi
+  h_assert_eq "$(h_sentinel | awk '{print $1}')" "v7" "broken checkout .git ($broken): the checkout is rebuilt and runs"
+done
+
+# Git lock files left by a killed run do not wedge the checkout.
+: >"$co/.git/index.lock"
+: >"$co/.git/shallow.lock"
+h_plant_event v8 prompt
+expire_stamp
+h_sentinel_reset
+prompt stale-git-locks
+h_assert_hook_run stale-git-locks "leftover git lock files"
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v8" "leftover git lock files: cleared, and the new head runs"
+
+# GIT_DIR inherited from a git hook: the tenant's repository is not moved.
+repo_head=$(git -C "$repo" rev-parse HEAD)
+h_plant_event v9 prompt
+expire_stamp
+h_sentinel_reset
+prompt git-dir GIT_DIR="$repo/.git" GIT_WORK_TREE="$repo" GIT_INDEX_FILE="$repo/.git/index"
+h_assert_hook_run git-dir "GIT_DIR inherited"
+h_assert_eq "$(git -C "$repo" rev-parse HEAD)" "$repo_head" "GIT_DIR inherited: the tenant's repository HEAD is untouched"
+h_assert_empty "$(git -C "$repo" status --porcelain)" "GIT_DIR inherited: the tenant's tree is untouched"
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v9" "GIT_DIR inherited: the checkout still updates and runs"
+
+# The tenant's own git config does not steer the checkout: a URL rewrite to nowhere
+# and a hook directory are both ignored.
+mkdir -p "$H_TMP/their-hooks"
+printf '#!/bin/sh\ntouch "%s/their-hook-ran"\n' "$H_TMP" >"$H_TMP/their-hooks/post-checkout"
+chmod +x "$H_TMP/their-hooks/post-checkout"
+git config -f "$home/.gitconfig" url.file:///nowhere.insteadOf "file://$H_TMP/apparatus.git"
+git config -f "$home/.gitconfig" core.hooksPath "$H_TMP/their-hooks"
+h_plant_event v10 prompt
+expire_stamp
+h_sentinel_reset
+prompt their-config
+h_assert_eq "$(h_sentinel | awk '{print $1}')" "v10" "the home's git config does not redirect the fetch"
+if [ -e "$H_TMP/their-hook-ran" ]; then h_fail "a hook from the home's git config ran"; else h_ok "no hook from the home's git config runs"; fi
+rm -f "$home/.gitconfig"
+
 # The log never carries the token: common.sh masks its value and its shape.
 body=$(printf 'Q%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)
 token="bbdt""_$body"

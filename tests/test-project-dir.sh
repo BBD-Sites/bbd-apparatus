@@ -90,6 +90,14 @@ h_sentinel_reset
 (cd "$b" && h_launch skill-bad "$home" -- "$boot" skill '../x' </dev/null)
 h_assert_empty "$(h_sentinel)" "a skill name that is a path does nothing"
 
+# A skill's body is plain text for the model, so it passes through as it is.
+# shellcheck disable=SC2016  # the planted script expands its own variables
+h_apparatus_file launcher/events/skill.sh '#!/usr/bin/env bash
+printf "Read the draft, then %s.\n" "follow these steps"'
+rm -f "$home/.claude/bbd-apparatus/state/fetch.stamp"
+(cd "$b" && h_launch skill-body "$home" -- "$boot" skill read-draft </dev/null)
+h_assert_eq "$(h_run_out skill-body)" "Read the draft, then follow these steps." "a skill's body is printed as it is"
+
 # A dead working directory: the shell starts in a directory that was deleted.
 dead="$H_TMP/dead"
 mkdir -p "$dead"

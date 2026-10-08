@@ -9,6 +9,8 @@
 # BBD_BASE, BBD_LOG and BBD_CHECKOUT. An event this checkout does not know exits 0,
 # so a newer hook entry never breaks an older checkout.
 
+# An exported CDPATH makes `cd` print the directory, which would corrupt $(cd ...).
+unset CDPATH
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || exit 0
 # shellcheck source=lib/common.sh
 . "$here/lib/common.sh" || exit 0
@@ -35,9 +37,12 @@ export BBD_EVENT BBD_DELIVERY BBD_INPUT BBD_PROJECT_ROOT BBD_TENANT BBD_CHANNEL 
 
 # Stdout becomes model context on UserPromptSubmit and a decision on Stop, so only a
 # single valid JSON object an event prints is passed on; anything else is logged and
-# dropped rather than shown.
+# dropped rather than shown. A skill is not a hook: its output is the body the model
+# follows, plain text, and passes as it is.
 out=$("${BASH:-bash}" "$script" "$@" 2>>"$BBD_LOG")
-if [ -n "$out" ]; then
+if [ -n "$out" ] && [ "$BBD_EVENT" = skill ]; then
+  printf '%s\n' "$out"
+elif [ -n "$out" ]; then
   printf '%s' "$out" | python3 "$BBD_CHECKOUT/lib/hookio.py" check 2>>"$BBD_LOG"
 fi
 exit 0
