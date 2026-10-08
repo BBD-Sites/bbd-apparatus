@@ -188,4 +188,58 @@ h_assert_eq "$(captured_in "$H_TMP/tenant-b-vault.git")" "captures/xb1.md " "two
 if [ -f "$squeue/xa1.json" ] || [ -f "$squeue/xa0.json" ]; then h_fail "two tenants: A's pointers are still queued after A shipped"
 else h_ok "two tenants: A's pointers leave the queue once A ships them"; fi
 
+# A cloud session (no token, the repository's own copy of the hook, which the
+# harness kills at 60 seconds) with slow old entries queued for the same repository.
+# The firing session must reach the captures branch first, on its own, and the step
+# must end inside the repository delivery's bound, so the harness never kills it
+# before the turn is pushed: the cloud machine's queue is lost when it is reclaimed.
+# Last in this file, because it plants a render that is slow for these entries.
+real_apparatus=$(cat "$(h_repo_root)/bin/apparatus")
+h_apparatus_file bin/apparatus "$(printf '%s\n' "$real_apparatus" | python3 -c '
+import sys
+src = sys.stdin.read()
+hook = (
+    "\n# Planted by tests/test-captures-branch.sh: a render that takes 25 seconds for a\n"
+    "# transcript whose name says slow, standing in for a large or stuck transcript.\n"
+    "if len(sys.argv) > 2 and sys.argv[1] == \"render\" and \"slow\" in sys.argv[2]:\n"
+    "    import time\n"
+    "    time.sleep(25)\n"
+)
+marker = "from pathlib import Path\n"
+assert marker in src
+sys.stdout.write(src.replace(marker, marker + hook, 1))')"
+cloudhome=$(h_fake_home cloud-slow)
+cqueue="$cloudhome/.claude/bbd-apparatus/queue"
+rc_repo=$(h_fake_repo cloud-vault)
+h_mark "$rc_repo" tenant-a
+mkdir -p "$cqueue"
+for n in 1 2 3; do
+  sed "s#/srv/projects/demo-notes#$rc_repo#g" "$fixture" >"$H_TMP/transcripts/slow$n.jsonl"
+  python3 -c 'import json,sys; json.dump({"session_id": sys.argv[1], "transcript_path": sys.argv[2], "where": "cloud",
+    "first_seen": "2026-01-0%sT00:00:00Z" % sys.argv[3], "attempts": 0}, open(sys.argv[4], "w"))' \
+    "slow$n" "$H_TMP/transcripts/slow$n.jsonl" "$n" "$cqueue/slow$n.json"
+done
+chmod 700 "$cqueue"
+transcript cf1
+start=$(date +%s)
+( ship cloud-slow "$cloudhome" "$rc_repo" cf1 ) &
+job=$!
+reached=""
+while kill -0 "$job" 2>/dev/null; do
+  if [ -z "$reached" ] && captured_in "$H_TMP/cloud-vault.git" | grep -q 'captures/cf1.md'; then
+    reached=$(($(date +%s) - start))
+  fi
+  sleep 0.5
+done
+wait "$job"
+total=$(($(date +%s) - start))
+if [ -z "$reached" ] && captured_in "$H_TMP/cloud-vault.git" | grep -q 'captures/cf1.md'; then reached=$total; fi
+h_assert_hook_run cloud-slow "a cloud session with slow old entries"
+if [ -n "$reached" ] && [ "$reached" -le 20 ]; then h_ok "cloud, slow old entries: the firing session reached the branch first (${reached}s)"
+else h_fail "cloud, slow old entries: the firing session reached the branch late or never (${reached:-never}s)"; fi
+if [ "$total" -le 55 ]; then h_ok "cloud, slow old entries: the step ended inside the repository bound (${total}s)"
+else h_fail "cloud, slow old entries: the step ran ${total}s, past the repository bound"; fi
+if [ -f "$cqueue/slow1.json" ]; then h_ok "cloud, slow old entries: an old entry that did not fit stays queued"
+else h_fail "cloud, slow old entries: an old entry that did not fit was dropped"; fi
+
 h_done

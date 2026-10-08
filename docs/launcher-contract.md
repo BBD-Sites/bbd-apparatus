@@ -169,7 +169,7 @@ Set in the hook entries, which never change, so they are chosen generously (seco
 | UserPromptSubmit | 10 |
 | PreToolUse | 5 |
 | Stop gate | 90 |
-| Stop ship | asynchronous in the plugin, with an internal bound of 120 |
+| Stop ship | asynchronous in the plugin, with an internal bound of 120; in a tenant repository's copy, 60, with an internal bound of 50 (section 10) |
 
 ## 8. State and queue layout
 
@@ -227,7 +227,23 @@ repository's `captures` branch instead.
 
 `launcher/events/stop-ship.sh` runs on Stop: asynchronously in the plugin, and
 synchronously in a cloud session's repository copy. It is the only step that sends
-anything off the machine. In order:
+anything off the machine.
+
+Its time bounds follow the delivery the dispatcher passes. The plugin entry has no
+harness timeout. The repository copy runs under the harness's 60-second timeout,
+and a cloud machine's queue is lost when the machine is reclaimed, so its whole step
+must end well inside that.
+
+| Bound (seconds) | Plugin | Repository copy |
+| --- | --- | --- |
+| Whole step, then killed | 120 | 50 |
+| Budget: no old entry's render starts unless its bounds fit before this | 90 | 30 |
+| One render | 30 | 15 |
+| One post-scan | 15 | 5 |
+| Redactor self-test | 60 | 20 |
+| Room a push must still have before the kill | 30 | 15 |
+
+In order:
 
 1. **Queue.** Write or refresh this session's pointer record first, so nothing that
    follows can lose the turn.
@@ -242,9 +258,11 @@ anything off the machine. In order:
      a later turn of a session it was sending, or another session. Without this, a
      session's last turn would wait for a Stop that may never come.
    - A rescan stops when nothing new arrived, or when no entry's render and
-     post-scan would fit inside the 90-second budget. Only a turn queued in the last
-     seconds before the 120-second kill can still wait for the next Stop in this
-     home.
+     post-scan would fit inside the budget.
+   - One last look always runs before the lock is let go, however long the passes
+     took. It takes only turns queued after the last pass began, and it is held to
+     the kill itself rather than the budget. A turn whose render and send cannot
+     fit before the kill stays queued, and waits for the next Stop in this home.
 3. **Self-test.** `apparatus selftest` runs once per checkout commit, and a pass is
    cached as `state/selftest-<sha>.ok`, which holds the sha256 of the redactor it
    proved, so a redactor edited in place is tested again. A failure sends nothing,
@@ -255,12 +273,15 @@ anything off the machine. In order:
    rendered with `apparatus render` (redacted before truncation and again over the
    whole document) into `state/outbox/`, NUL bytes are removed (the post-scan skips a
    file holding one as binary; removing one can only join text into a longer shape),
-   and the copy is post-scanned. The whole step is killed at 120 seconds. The firing
-   session is always rendered and posted, and goes first, so old entries that keep
-   failing or a store that hangs on them cannot hold it back. An old entry is
-   rendered only if its render (30 seconds) and post-scan (15 seconds) bounds fit
-   inside 90 seconds, and posted only if the post's 20-second timeout fits inside the
-   120-second bound with 5 seconds to spare; the rest wait for the next turn.
+   and the copy is post-scanned.
+   - The firing session is always rendered, and is sent on its own, through either
+     door, before any old entry is rendered. Old entries that keep failing, or a
+     store that hangs on them, therefore cannot hold it back, and in the cloud the
+     turn is pushed before the harness could kill the step.
+   - An old entry is rendered only if its render and post-scan bounds fit inside
+     the budget. It is posted only if the post's 20-second timeout, plus 5 seconds,
+     fits inside the whole-step bound. A batch of old entries is pushed only if the
+     push room still fits. The rest wait for the next turn.
    - A post-scan hit (exit 1 with the file named) moves the copy to `quarantine/`,
      records a notice once for that session, drops the entry, and sends nothing. A
      later turn of the same session is queued and checked again. A post-scan that

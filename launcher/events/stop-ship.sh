@@ -24,18 +24,33 @@ quarantine=$BBD_BASE/quarantine
 env_file=$BBD_BASE/tenant.env
 lock=$state/ship.lock
 DRAIN_MAX=5
-# The plugin runs this step asynchronously with no harness timeout, so it keeps its
-# own: the whole step is killed after SHIP_BOUND seconds. The firing session is
-# always rendered and sent first. An old entry is rendered only if its render and
-# post-scan bounds both fit before SHIP_BUDGET, and posted only if the post's own
-# timeout fits before SHIP_BOUND with a margin, so no old entry's work is ever cut
-# off by the kill, and none can push the firing session past it. A kill loses
-# nothing: every queue write is an atomic rename, and the pointers wait.
-SHIP_BOUND=120
-SHIP_BUDGET=90
+# The bounds follow the delivery. The plugin runs this step asynchronously, with no
+# harness timeout, so it keeps its own. A tenant repository's copy (a cloud session)
+# runs synchronously under the harness's 60-second timeout, so its whole step must
+# end well inside that, or the harness kills it first.
+#   SHIP_BOUND    the whole step is killed after this many seconds
+#   SHIP_BUDGET   no old entry's render starts unless its bounds fit before this
+#   PUSH_ROOM     no old entry's send starts unless this much time is left
+# The firing session is rendered and sent first, on its own, before any old entry is
+# touched. Old entries then go only while their work fits, so none can push the
+# firing session past the kill. A kill loses nothing: every queue write is an atomic
+# rename, and the pointers wait.
+if [ "${BBD_DELIVERY:-}" = repo ]; then
+  SHIP_BOUND=50
+  SHIP_BUDGET=30
+  RENDER_BOUND=15
+  SCAN_BOUND=5
+  SELFTEST_BOUND=20
+  PUSH_ROOM=15
+else
+  SHIP_BOUND=120
+  SHIP_BUDGET=90
+  RENDER_BOUND=30
+  SCAN_BOUND=15
+  SELFTEST_BOUND=60
+  PUSH_ROOM=30
+fi
 SHIP_MARGIN=5
-RENDER_BOUND=30
-SCAN_BOUND=15
 RESCANS=3
 
 ship() { python3 "$ship_py" "$@"; }
@@ -84,7 +99,7 @@ ship_step() {
   [ -n "$sha" ] && ok_file=$state/selftest-$sha.ok
   if [ -z "$ok_file" ] || [ -z "$redactor_sha" ] || [ "$(cat "$ok_file" 2>/dev/null)" != "$redactor_sha" ]; then
     # Its output names the fake secrets it tests with; only the verdict is logged.
-    if bbd_bounded 60 python3 "$apparatus" selftest >/dev/null 2>&1; then
+    if bbd_bounded "$SELFTEST_BOUND" python3 "$apparatus" selftest >/dev/null 2>&1; then
       [ -n "$ok_file" ] && printf '%s\n' "$redactor_sha" >"$ok_file"
       bbd_log "stop-ship: redactor self-test passed for ${sha:-an untracked checkout}"
     else
@@ -109,10 +124,10 @@ ship_step() {
   # let go, up to RESCANS more passes over the turns queued after the last pass
   # began: a Stop that found the lock held queued its turn and left, and if it was
   # a session's last turn, no later Stop would ever send it. A rescan stops when
-  # nothing new arrived or no entry's work would fit inside the bound.
+  # nothing new arrived or no entry's work would fit inside the budget.
   since=$(ship now-ns)
   drain=$(ship drain-list "$queue" "$current" "$DRAIN_MAX" ${scope[@]+"${scope[@]}"})
-  ship_pass "$current" "$drain"
+  ship_pass "$current" "$drain" "$SHIP_BUDGET"
   pass=0
   while [ "$pass" -lt "$RESCANS" ] && [ $((SECONDS + RENDER_BOUND + SCAN_BOUND)) -le "$SHIP_BUDGET" ]; do
     drain=$(ship drain-list "$queue" - "$DRAIN_MAX" ${scope[@]+"${scope[@]}"} --since "$since")
@@ -120,26 +135,36 @@ ship_step() {
     since=$(ship now-ns)
     # These turns were queued moments ago by a live session, so a missing or empty
     # transcript is not a loss; the newest goes first.
-    ship_pass "" "$drain"
+    ship_pass "" "$drain" "$SHIP_BUDGET"
     pass=$((pass + 1))
   done
+  # One last look always runs before the lock is let go, however long the passes
+  # above took. It takes only turns queued after the last pass began, and it is
+  # held to the kill itself rather than the budget: a turn whose render and send
+  # still fit before SHIP_BOUND goes now, and one that does not stays queued for
+  # the next Stop in this home.
+  drain=$(ship drain-list "$queue" - "$DRAIN_MAX" ${scope[@]+"${scope[@]}"} --since "$since")
+  [ -z "$drain" ] || ship_pass "" "$drain" $((SHIP_BOUND - SHIP_MARGIN - PUSH_ROOM))
 }
 
-# ship_pass FIRST DRAIN: render, post-scan and send the sessions in DRAIN (one id
-# per line). FIRST is the firing session: it is always tried, and a missing or empty
-# transcript is not a loss for it. An empty FIRST makes every id live in that sense
-# (a rescan's entries were queued moments ago) and puts every id under the budget.
+# ship_pass FIRST DRAIN LIMIT: render, post-scan and send the sessions in DRAIN (one
+# id per line). FIRST is the firing session: it is always tried, it is sent on its
+# own as soon as it is ready, before any other entry is rendered, and a missing or
+# empty transcript is not a loss for it. An empty FIRST makes every id live in that
+# sense (a rescan's entries were queued moments ago) and puts every id under LIMIT:
+# no other entry's render starts unless its bounds fit before LIMIT seconds.
 # shellcheck disable=SC2317,SC2329
 ship_pass() {
-  local first=$1 drain=$2 live sid transcript out rc hit stamp result i post_timeout \
-    ready=() stamps=() args=()
+  local first=$1 drain=$2 limit=$3 live sid transcript out rc hit stamp outcome=""
+  ready=()
+  stamps=()
   live=$first
   # Session ids are plain tokens (letters, digits, - and _), one per line.
   [ -n "$first" ] || live=$(printf '%s\n' "$drain" | tr '\n' ' ')
   for sid in $drain; do
-    # The budget holds back every entry but the firing session, which is always
+    # The limit holds back every entry but the firing session, which is always
     # tried, and comes first.
-    if [ "$sid" != "$first" ] && [ $((SECONDS + RENDER_BOUND + SCAN_BOUND)) -gt "$SHIP_BUDGET" ]; then
+    if [ "$sid" != "$first" ] && [ $((SECONDS + RENDER_BOUND + SCAN_BOUND)) -gt "$limit" ]; then
       bbd_log "stop-ship: out of time; the rest wait for the next turn"
       break
     fi
@@ -193,31 +218,47 @@ ship_pass() {
     fi
     ready+=("$sid")
     stamps+=("$stamp")
+    # The firing session goes out on its own the moment it is ready, before any old
+    # entry is rendered: in a cloud session the harness kills this step at 60
+    # seconds and the machine's queue is lost when it is reclaimed, so its turn must
+    # not wait behind entries that are slow or failing.
+    if [ "$sid" = "$first" ]; then
+      ship_send "$first" || outcome=kept
+      [ -n "$outcome" ] || outcome=shipped
+      ready=()
+      stamps=()
+    fi
   done
-  [ "${#ready[@]}" -gt 0 ] || return 0
+  if [ "${#ready[@]}" -gt 0 ]; then
+    if ship_send "$first"; then [ -n "$outcome" ] || outcome=shipped; else outcome=kept; fi
+  fi
+  case "$door" in post|captures) [ -z "$outcome" ] || ship status "$state" "$outcome" "$queue" ;; esac
+  return 0
+}
 
-  # 4. The door.
+# ship_send FIRST: send what is in ready[] and stamps[] through the door. FIRST is
+# always sent; any other entry is sent only if its send can finish before the step is
+# killed. Returns 1 if anything was not stored.
+# shellcheck disable=SC2317,SC2329
+ship_send() {
+  local first=$1 sid i post_timeout ok=0 args=()
   case "$door" in
     post)
-      result=shipped
       post_timeout=$(ship post-timeout)
       case "$post_timeout" in ''|*[!0-9]*) post_timeout=20 ;; esac
       i=0
       while [ "$i" -lt "${#ready[@]}" ]; do
         sid=${ready[$i]}
-        # The firing session is first and always posted; an old entry's post starts
-        # only if it can finish before the step is killed.
         if [ "$sid" != "$first" ] \
             && [ $((SECONDS + post_timeout + SHIP_MARGIN)) -gt "$SHIP_BOUND" ]; then
           bbd_log "stop-ship: out of time to post; the rest wait for the next turn"
-          result=kept
-          break
+          return 1
         fi
         [ "$(ship post "$env_file" "$state" "$queue" "$sid" "${stamps[$i]}" "$outbox/$sid.md" \
-          "$BBD_CHECKOUT/lib/redact.py")" = stored ] || result=kept
+          "$BBD_CHECKOUT/lib/redact.py")" = stored ] || ok=1
         i=$((i + 1))
       done
-      ship status "$state" "$result" "$queue"
+      return "$ok"
       ;;
     not-connected)
       # The store does not exist yet: the witnesses above ran, the pointers wait, and
@@ -228,18 +269,24 @@ ship_pass() {
         ship notice "$state" store-not-connected \
           "Your sessions are being kept on this machine until your store is connected; nothing is lost."
       fi
+      return 0
       ;;
     *)
+      # One push for the batch. A batch without the firing session starts only if a
+      # push still fits before the kill.
+      case " ${ready[*]} " in
+        *" $first "*) ;;
+        *) if [ $((SECONDS + PUSH_ROOM + SHIP_MARGIN)) -gt "$SHIP_BOUND" ]; then
+             bbd_log "stop-ship: out of time to push; the rest wait for the next turn"
+             return 1
+           fi ;;
+      esac
       i=0
       while [ "$i" -lt "${#ready[@]}" ]; do
         args+=("${ready[$i]}" "${stamps[$i]}" "$outbox/${ready[$i]}.md")
         i=$((i + 1))
       done
-      if [ "$(ship captures "$BBD_PROJECT_ROOT" "$queue" "$state" "${args[@]}")" = stored ]; then
-        ship status "$state" shipped "$queue"
-      else
-        ship status "$state" kept "$queue"
-      fi
+      [ "$(ship captures "$BBD_PROJECT_ROOT" "$queue" "$state" "${args[@]}")" = stored ]
       ;;
   esac
 }
