@@ -315,9 +315,14 @@ reports a loss rather than making a suggestion. A marker whose `notices` is `fal
 turns every notice off for that repository, ship notices included.
 
 **The stop is written by a skill.** Each notice text tells the model: if the person
-says they do not want this notice again, run the stop command for its kind with the
-Bash tool and say in one sentence that it is off. The command is the bootstrap's
-skill form, in the delivery the notice came through:
+says they do not want this notice again, use the stop skill for its kind
+(`/bbd:notices-stop-<kind>` from the plugin, `/notices-stop-<kind>` from a committed
+stub in a cloud session) and say in one sentence that it is off; if the skill is not
+loaded, the Bash call the stub pre-approves is the fallback. The four stubs sit beside
+`read-draft` under `plugin/skills/` and `templates/tenant-repo/.claude/skills/`, each
+pre-approving exactly its one bootstrap call, so the model's call meets no permission
+prompt. The command is the bootstrap's skill form, in the delivery the notice came
+through:
 
 ```
 bash "${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh" skill notices-stop-<kind>
@@ -326,7 +331,8 @@ bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh" skill notices-stop-<kind>
 
 `<kind>` is `version`, `model`, `fresh-session` or `all`. The kind rides in the
 skill's name because the bootstrap, which never changes, passes a skill one word and
-nothing after it. `launcher/events/skill.sh` records the stop through
+nothing after it. Adding the stubs changed the plugin shell, so its version moved
+from 1 to 2; the shell's version moves only when the shell itself changes. `launcher/events/skill.sh` records the stop through
 `lib/notices.py stop` and prints the one line the model says; a name with any other
 kind is refused: nothing printed, nothing written, one line in the log.
 

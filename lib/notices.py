@@ -65,6 +65,10 @@ TEXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "text"
 TAIL_LIMIT = 262144
 PENDING_TEXT_LIMIT = 1000
 
+# The stop, in the delivery the notice came through: the skill the stub registers (the
+# plugin's are namespaced by its id; a committed stub's are not), and the Bash call the
+# stub pre-approves, for a model that has the texts but not the stub.
+STOP_SKILLS = {"plugin": "/bbd:notices-stop-%s", "repo": "/notices-stop-%s"}
 STOP_COMMANDS = {
     "plugin": 'bash "${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh" skill notices-stop-%s',
     "repo": 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh" skill notices-stop-%s repo',
@@ -231,6 +235,10 @@ def stop_command(delivery: str, kind: str) -> str:
     return STOP_COMMANDS.get(delivery, STOP_COMMANDS["plugin"]) % kind
 
 
+def stop_skill(delivery: str, kind: str) -> str:
+    return STOP_SKILLS.get(delivery, STOP_SKILLS["plugin"]) % kind
+
+
 def version_notice(rec: Record, running: str, cli: dict, delivery: str) -> str:
     latest = cli.get("latest") if isinstance(cli.get("latest"), str) else ""
     have, want = parse_version(running), parse_version(latest)
@@ -240,6 +248,7 @@ def version_notice(rec: Record, running: str, cli: dict, delivery: str) -> str:
     if key in rec.said:
         return ""
     text = template("version", latest=latest, running=running,
+                    stop_skill=stop_skill(delivery, "version"),
                     stop_command=stop_command(delivery, "version"))
     if text:
         rec.mark(key)
@@ -263,6 +272,7 @@ def model_notice(rec: Record, model_id: str, models: list, delivery: str) -> str
         newer_released=str(newer.get("released", "")),
         newer_for=str(newer.get("for", "the same work")),
         current_name=str(current.get("name", current["id"])),
+        stop_skill=stop_skill(delivery, "model"),
         stop_command=stop_command(delivery, "model"),
     )
     if text:
@@ -304,6 +314,7 @@ def fresh_notice(rec: Record, doc: dict, sid: str, models: list, compactions_dir
     if not reason:
         return ""
     text = template("fresh-session", reason=reason,
+                    stop_skill=stop_skill(delivery, "fresh-session"),
                     stop_command=stop_command(delivery, "fresh-session"))
     if text:
         rec.mark(key)

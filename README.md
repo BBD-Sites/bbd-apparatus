@@ -19,7 +19,7 @@ their machine.
 
 The marketplace is this repository (`.claude-plugin/marketplace.json`, name
 `bbd-apparatus`); the plugin is `plugin/` (name `bbd`, so its id is `bbd@bbd-apparatus`
-and its skill is `/bbd:read-draft`). By hand, in any Claude Code session or shell:
+and its skills are `/bbd:read-draft` and the four `/bbd:notices-stop-<kind>` stops). By hand, in any Claude Code session or shell:
 
 ```
 claude plugin marketplace add BBD-Sites/bbd-apparatus

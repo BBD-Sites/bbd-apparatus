@@ -301,7 +301,8 @@ h_assert_empty "$(grep -n -i -E 'urllib|http\.client|requests|curl |wget |regist
 # nothing; "all" silences every notice.
 home=$(newhome writer)
 start w0 "$home" s-w0 startup claude-opus-5-5 "2.0.0 (Claude Code)"
-if has "$(ctx w0)" 'bbd-launch.sh" skill notices-stop-version'; then h_ok "a notice tells the model the stop command for its kind"; else h_fail "a notice does not name its stop command"; fi
+if has "$(ctx w0)" "/bbd:notices-stop-version"; then h_ok "a notice names the stop skill for its kind, in the plugin's slash form"; else h_fail "a notice does not name its stop skill"; fi
+if has "$(ctx w0)" 'bbd-launch.sh" skill notices-stop-version'; then h_ok "a notice tells the model the stop command for its kind, as the fallback"; else h_fail "a notice does not name its stop command"; fi
 skill sk-model "$home" notices-stop-model
 h_assert_eq "$(h_run_code sk-model)" 0 "the stop skill: exits 0"
 if has "$(h_run_out sk-model)" "off"; then h_ok "the stop skill: says that model notices are off"; else h_fail "the stop skill: printed no confirmation"; fi
