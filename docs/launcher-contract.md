@@ -203,3 +203,51 @@ repository's `captures` branch instead.
   tests here and a redactor rule can recognize one. `tests/test-token-not-tracked.sh`
   fails if that shape appears in any tracked file.
 - The tracked `.mcp.json` in a tenant repository carries the search URL only.
+
+## 11. The prompt and compact steps
+
+`launcher/events/prompt.sh` runs on every UserPromptSubmit, and
+`launcher/events/compact.sh` runs when SessionStart carries `source: compact`, the
+one hook that can put context back after a compaction. Both print one JSON object
+whose `additionalContext` the model reads; the dispatcher passes on nothing else.
+
+**The ask ledger.** Every prompt is written to `state/ledger/<session_id>.md` (0600 in
+a 0700 directory) as the next numbered line, `<n>. open <utc>: <the words, whole,
+spaces folded>`, by `lib/ledger.py`. A number is given once and never again, so
+"number 3" names the same ask for the whole session, and a closed item is kept as
+`done` with its number. Not recorded, because none is the person's ask: a prompt that
+is empty once the harness's own wrappers are removed (`<task-notification>`,
+`<system-reminder>` and the parts of a slash command), a slash command, a JSON-shaped
+prompt, and a system notification. Typed text beside a wrapper is recorded on its own;
+an unclosed wrapper is cut to the end of the prompt. One item keeps at most 4,000
+characters. Closing an item is a later task's; the file format and the read path are
+here.
+
+**What a prompt injects, in order:**
+
+1. `text/reply-contract.md` and `text/witness-rules.md`: the apparatus's own words,
+   kept as text in this checkout so they change here and never in the plugin.
+2. The tenant's rules file, the one the vault marker names (`rules`), under a heading
+   that names the file. A marker that names none, or a file that is missing or
+   empty, gives no section.
+3. `.apparatus/standing.md` in the tenant repository, the standing instructions, the
+   same way.
+4. The session's open asks, oldest first, each under its number.
+
+**What a compaction injects, in order:** `text/compact-notice.md` (one sentence saying
+the session was compacted and that memory in the store is unaffected), then the rules
+file, the standing instructions and the open asks as above. The reply contract is not
+repeated there; the next prompt brings it. The compaction is counted in
+`state/compactions/<session_id>`, a plain integer the fresh-session advice reads;
+every other SessionStart source leaves the count alone.
+
+**The cap.** The whole injection is at most 6,000 characters. The asks give way first,
+oldest first, with one line saying how many are not shown; when not even the newest
+fits, no asks are shown. If the texts and the rules alone pass the cap, their tail is
+cut at the cap and the cut is said. A growing per-prompt rulebook was measured to
+raise the correction rate, so the cap is a feature, not a limit to raise.
+
+**The token.** A token shape (`bbdt_` plus 40 characters) is masked as `[token]` before
+anything reaches the ledger or stdout, whether it came in the prompt, the rules file
+or the standing instructions. The event scripts never hold the token's value: the
+dispatcher parses `tenant.env` and exports no token to them.
