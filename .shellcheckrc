@@ -1,3 +1,6 @@
 # Lets every test name the harness it sources, relative to the test itself.
 source-path=SCRIPTDIR
 external-sources=true
+# SC2317 (unreachable command) is an info note that newer shellcheck raises on the
+# bootstrap trap-cleanup body; the lines run from the trap, so the note is wrong there.
+disable=SC2317
