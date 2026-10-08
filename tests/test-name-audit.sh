@@ -18,8 +18,10 @@
 # matching text, because CI logs of a public repository are public and the list is
 # the secret.
 #
-# Four checks need no list: every commit's author and committer email is the
-# neutral identity; no home-directory path; no email address but the neutral one;
+# Four checks need no list: every commit's author email is the neutral identity,
+# and its committer is too, or is GitHub's own web-flow identity, which a rebase
+# merge on GitHub writes as committer (merges here are rebase only, so the author
+# stays neutral); no home-directory path; no email address but the neutral one;
 # no GitHub owner but this repository's own.
 set -u
 # shellcheck source=lib/harness.sh
@@ -27,6 +29,9 @@ set -u
 h_init
 
 ALLOWED_EMAIL="apparatus-maintainers@users.noreply.github.com"
+# GitHub's web-flow committer, assembled so the email scan below does not flag this
+# file; it is accepted only as a committer, never as an author.
+GITHUB_COMMITTER="noreply""@github.com"
 ALLOWED_OWNER="Personal-Tooling"
 # Written as a bracket expression so this file does not match its own pattern.
 HOME_PATH_RE='/User[s]/[^/[:space:]]+/'
@@ -79,8 +84,9 @@ LIST
 # audit_static REPO: the checks that need no list. Prints one line per hit.
 audit_static() {
   local repo=$1
-  git -C "$repo" log --format='%H %ae%n%H %ce' HEAD 2>/dev/null \
-    | awk -v ok="$ALLOWED_EMAIL" '$2 != ok { print "commit " substr($1, 1, 12) " carries an identity other than the neutral one" }' \
+  git -C "$repo" log --format='%H %ae %ce' HEAD 2>/dev/null \
+    | awk -v ok="$ALLOWED_EMAIL" -v gh="$GITHUB_COMMITTER" \
+        '$2 != ok || ($3 != ok && $3 != gh) { print "commit " substr($1, 1, 12) " carries an identity other than the neutral one" }' \
     | sort -u
   git -C "$repo" grep -c -I -E -e "$HOME_PATH_RE" -- . 2>/dev/null \
     | sed 's/^/home-directory path in file /' || true
@@ -137,6 +143,23 @@ self_check() {
     *"line #4 in commit metadata"*) h_ok "self-check: a name in a commit message is caught" ;;
     *) h_fail "self-check: a name in a commit message was missed" ;;
   esac
+
+  # A rebase merge on GitHub keeps the neutral author and writes GitHub's own
+  # committer; that pair passes, and every other mix with a foreign email fails.
+  identity_case() {
+    local label=$1 author=$2 committer=$3 want=$4 r got
+    r=$(h_fake_repo "identity-$label")
+    GIT_AUTHOR_NAME=x GIT_AUTHOR_EMAIL="$author" GIT_COMMITTER_NAME=x GIT_COMMITTER_EMAIL="$committer" \
+      git -C "$r" commit -q --allow-empty -m "chore: $label"
+    got=pass
+    case "$(audit_static "$r")" in *"identity other than the neutral one"*) got=fail ;; esac
+    h_assert_eq "$got" "$want" "self-check: identity case $label is a $want"
+  }
+  identity_case rebase-merge "$ALLOWED_EMAIL" "$GITHUB_COMMITTER" pass
+  identity_case github-author "$GITHUB_COMMITTER" "$GITHUB_COMMITTER" fail
+  identity_case github-author-neutral-committer "$GITHUB_COMMITTER" "$ALLOWED_EMAIL" fail
+  identity_case foreign-committer "$ALLOWED_EMAIL" "someone${at}example.org" fail
+  identity_case foreign-author "someone${at}example.org" "$GITHUB_COMMITTER" fail
 
   git -C "$fake" -c user.email="someone${at}example.org" commit -q --allow-empty -m "chore: other identity"
   printf '%s\n' "/Use""rs/someone/notes" "write to someone${at}example.org" \

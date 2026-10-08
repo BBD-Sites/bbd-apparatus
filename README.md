@@ -26,5 +26,7 @@ shellcheck tests/*.sh tests/lib/*.sh
 
 The name audit reads its deny-list from outside the repository: `$NAME_DENYLIST_FILE`,
 else `~/.config/bbd-apparatus/denylist.txt`, else the `NAME_DENYLIST` Actions secret in
-CI, where an empty list fails the run. The launcher's contract is
+CI, where an empty list fails the run. Merges are rebase only, so every commit keeps the
+neutral author and its committer is either that identity or GitHub's own web-flow
+identity; the audit accepts nothing else. The launcher's contract is
 `docs/launcher-contract.md`.
