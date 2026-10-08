@@ -135,7 +135,8 @@ filled fails this gate rather than acting under a placeholder.
   forces 0.
 - Exit 2 is never used. A bug therefore cannot turn into a block.
 - The one deliberate block is the Stop gate printing
-  `{"decision":"block","reason":"..."}` with exit 0, at most once per `prompt_id`.
+  `{"decision":"block","reason":"..."}` with exit 0, at most once per `prompt_id`
+  (section 13).
 - Context is injected only through `hookSpecificOutput.additionalContext` on stdout.
   Stdout carries nothing else, because UserPromptSubmit stdout becomes model context.
 - Errors go only to `CFG/bbd-apparatus/state/launcher.log`, which is rotated and
@@ -190,6 +191,9 @@ CFG/bbd-apparatus/
     outbox/                  a rendered copy while it is being sent; emptied by every run
     fetch.stamp              when the last fetch finished
     compactions/<session_id> the session's compaction count
+    reader/<draft hash>.json the reader's receipt for one draft (section 13)
+    loopguard/<session_id>.turn  the turn last blocked, and how many times
+    draft.md                 a draft the person gave the read-draft skill; consumed by it
     launcher.log             errors, rotated and redacted
 ```
 
@@ -505,3 +509,83 @@ Claude Code version is checked against the npm registry weekly by
 `.github/workflows/keep-current.yml`, which goes red when the file is behind; that red
 run is the signal to open the data pull request. The model lineup has no machine-readable
 public source that carries release dates, so it is read from the model pages by hand.
+
+## 13. The Stop gate: the read-draft step
+
+`launcher/events/stop-gate.sh` runs on every Stop, synchronously, before the ship step.
+It is the one place that may print a block decision. The reply the model has just
+finished (`last_assistant_message`) is read by an independent reader on the person's own
+plan, and when the reader finds something, the turn is held once with the findings as
+the reason, so the model sends a corrected reply. Stop fires after the reply is already
+on screen, so "read before it is sent" can only mean this: one loop-guarded block,
+followed by the corrected reply. Nothing else here reaches the person.
+
+**When it reads.** All of these must hold, in this order; otherwise the step exits 0
+with nothing printed and one line in the log saying which failed:
+
+1. `stop_hook_active` is not true. When it is, this Stop is the second pass of the turn,
+   after a block, and the reply goes through whatever the reader would say.
+2. The draft has at least 50 prose words (fenced code left out). Shorter is an
+   acknowledgement, not a draft anyone needs read.
+3. The repository's rules file, the one the vault marker names, exists and is not
+   empty. With no rules of the person's to read against, the step stands down.
+4. No receipt exists for this exact draft (`state/reader/<hash>.json`, the hash of the
+   text with whitespace runs folded). A draft is read once.
+
+**The reader** is `reader/reader.py`: it fills `reader/reader-prompt.md` with the reply
+contract (`text/reply-contract.md`), the rules file, the session's open asks from the
+ledger (the person's own words, so the reader can see what was dropped or left
+unanswered) and the draft, and runs one headless call:
+
+```
+claude -p --model haiku --tools "" --no-session-persistence --strict-mcp-config --output-format text
+```
+
+with the prompt on stdin, in an empty temporary directory (so none of the person's
+project is read), with `BBD_NESTED=1` in its environment (so every launcher in that
+session exits at once: no recursion, and the reader's own session is never shipped) and
+`CLAUDECODE` removed from it. The call is killed, with everything under it, at 60
+seconds (`BBD_READER_BOUND` overrides, 1 to 600; the hook entry's own timeout is 90).
+Not `--bare`: that flag reads no OAuth login, and the reader runs on the person's plan.
+A token shape is masked in everything handed to the reader and everything it returns.
+
+**The verdict** is parsed strictly. The first line that says `VERDICT: send` or
+`VERDICT: fix` is the verdict (the person's own hooks run in the nested session too and
+may wrap the answer in a tag or a closing line, so it need not be the first line);
+reading stops at a `---` trailer; a finding is a `- ` line under one of the nine
+headings that opens with a quote or with `hedge lost:`; `- none` and the sentence count
+are not findings. `fix` holds only with at least one finding. Anything else (no
+`claude` on PATH, a timeout, a non-zero exit, no output, an answer out of shape) is
+`send`: no failure of the reader's own can hold a reply back.
+
+**The block** is `{"decision":"block","reason":"..."}`, the reason being the findings,
+one per line with their heading, under one sentence asking for the corrected reply, at
+most 4,000 characters. It is printed at most once per turn: `lib/loopguard.py` keeps
+`state/loopguard/<session_id>.turn` keyed by `prompt_id` (the harness's own turn
+identity), or by the draft's hash when the hook carries no `prompt_id`, and a second
+`fix` in the same turn is logged and let through. `stop_hook_active` is the first line
+of that guard; the file is the second, for a harness that does not send the field.
+
+**The receipt**, `lib/receipt.py`, is written for every read and every attempt, never
+for a skip: session, prompt_id, status (`read`, `unparseable`, `empty`, `no-claude`,
+`timeout`, `failed`), verdict, the number of findings, whether the turn was blocked,
+the seconds the reader took, the hook's `stop_reason` and the word count. Never the
+draft's text. Receipts and guard files older than seven days are removed in passing.
+
+**The skill** (`launcher/events/skill.sh`, behind the `read-draft` stubs) runs the same
+reader by hand. The stub's one pre-approved command carries no arguments and the
+bootstrap reads no stdin for a skill, so the draft travels through one file: with no
+`state/draft.md` the body says to write the exact text there and run the same command
+again; with one, the reader runs on it against the contract and the rules, the verdict
+and the findings are printed in plain text, a receipt is written with session `skill`,
+and the file is removed. A first line of `kind: copy` names the draft as copy the
+person's customers will read (the owner-voice and third-grade passes apply) and is not
+part of the draft. When the reader cannot run (no `claude`, a timeout, a failure) the
+body hands the assembled prompt back, so the model can give it to a reader of its own
+with the Agent tool.
+
+**Calibration.** `reader/calibrate.sh` reads every `reader/calibration/rejected-*.md`
+and `accepted-*.md` with the calibration asks and rules beside them, on the real
+`claude`, and fails unless every rejected draft gets `fix` and every accepted one
+`send`. It is run, and its date recorded in the pull request, whenever the prompt or a
+draft changes.
