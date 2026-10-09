@@ -43,10 +43,15 @@ reverses the enablement, removes the marketplace, `tenant.env` and the signers c
 leaves the vault repository, the checkout and the queue alone.
 
 A home that must never carry the apparatus is listed, one absolute path per line, in
-`<config>/bbd-apparatus/excluded-homes` of the login that runs the installer (`<config>`
-is `$CLAUDE_CONFIG_DIR`, else `~/.claude`). The installer refuses that home, and any home
-under it, in every run, install or uninstall, whatever the command line names. The
-record stands between runs, which a flag that has to be retyped does not.
+`<login home>/.claude/bbd-apparatus/excluded-homes`, where the login home is the one the
+account's directory entry names (`dscl . -read /Users/<user> NFSHomeDirectory` on a Mac),
+never `$HOME`: a session in a secondary account home runs with `HOME` rewritten, and a
+record kept under `$HOME` would be a different file in every home. The installer reads
+that one record before it touches anything and refuses the listed homes, and any home
+under one, in every run, install or uninstall, whatever the command line names. With no
+record there it refuses every home and says where to create it; an empty file means no
+home is excluded. The record stands between runs, which a flag that has to be retyped
+does not.
 
 The marketplace is this repository (`.claude-plugin/marketplace.json`, name
 `bbd-apparatus`); the plugin is `plugin/` (name `bbd`, so its id is `bbd@bbd-apparatus`

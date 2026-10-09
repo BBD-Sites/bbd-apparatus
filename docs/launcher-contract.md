@@ -187,8 +187,10 @@ CFG/bbd-apparatus/
   tenant.env                 0600; the token and settings, written only by the installer
   allowed_signers            the published signers file, copied by the installer (section 3,
                              step 5); the installer refuses to install while it has none to copy
-  excluded-homes             read by the installer only, from the config of the login that
-                             runs it: homes it must never touch, one absolute path per line
+  excluded-homes             read by the installer only, and only at the LOGIN home (the
+                             account's directory entry, never $HOME): homes it must never
+                             touch, one absolute path per line; with no record there the
+                             installer refuses every home, and an empty file excludes none
   checkout-<channel>/        the apparatus checkout the launcher runs
   queue/<session_id>.json    a pointer record
   quarantine/<session_id>.md rendered copies the post-scan refused; never sent
