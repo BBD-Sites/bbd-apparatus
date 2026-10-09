@@ -93,7 +93,18 @@ while [ $# -gt 0 ]; do
 done
 [ "${#homes[@]}" -gt 0 ] || usage
 
-for tool in claude git python3; do
+# claude is resolved once, here, to an absolute path, and every per-home command runs
+# that path. The per-home command runs under `env` with that home's HOME, and env looks
+# a bare name up with no shell: a PATH entry bash expands at lookup (one written with
+# a tilde, or a relative one) names a directory env never finds, so on half the homes
+# of one real run the lookup failed with "env: claude: No such file or directory"
+# after the check below had passed. With no claude at all, one line and a usage exit.
+CLAUDE_BIN=$(command -v claude) || die "claude is not on PATH; install Claude Code, or put its directory on PATH, then run this again"
+case "$CLAUDE_BIN" in
+  /*) ;;
+  *) CLAUDE_BIN="$(cd "$(dirname "$CLAUDE_BIN")" && pwd -P)/$(basename "$CLAUDE_BIN")" || die "could not resolve the path of claude" ;;
+esac
+for tool in git python3; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is not on PATH"
 done
 
@@ -200,7 +211,7 @@ mask() { sed -E 's/bbdt_[A-Za-z0-9]{40}/[token]/g'; }
 run_claude() {
   local home=$1 cfg=$2 out="$work/claude.out"
   shift 2
-  if env HOME="$home" CLAUDE_CONFIG_DIR="$cfg" claude "$@" </dev/null >"$out" 2>&1; then
+  if env HOME="$home" CLAUDE_CONFIG_DIR="$cfg" "$CLAUDE_BIN" "$@" </dev/null >"$out" 2>&1; then
     return 0
   fi
   printf 'install: claude %s failed for %s:\n' "$*" "$home" >&2

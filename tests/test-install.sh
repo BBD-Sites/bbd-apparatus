@@ -17,7 +17,10 @@
 # names, never from $HOME (a session in a secondary account home rewrites HOME), and
 # with no record there every home is refused, so the seal fails closed; and
 # --uninstall reverses the enablement, removes the marketplace and tenant.env, and
-# leaves the vault repository alone.
+# leaves the vault repository alone. The claude binary is resolved once to an absolute
+# path before any home: a PATH entry written with a tilde is one bash expands at lookup
+# and `env` does not, so a per-home `env HOME=... claude` found nothing on half the
+# homes of a real run; and with no claude at all the run is refused in one line.
 set -u
 # shellcheck source=lib/harness.sh
 . "$(dirname "$0")/lib/harness.sh"
@@ -294,6 +297,33 @@ case "$(h_run_out one)$(cat "$tmp/run/one.err")" in
   *"$body40"*) h_fail "install: the token body reached stdout or stderr" ;;
   *) h_ok "install: stdout and stderr carry no token" ;;
 esac
+
+# ---------------------------------------------------------------------------------
+# 1b. The claude binary is found once, as an absolute path, before any home. Here it
+# is on PATH only through a directory under the invoking HOME, named with a tilde:
+# bash expands that at lookup, so `command -v claude` succeeds, while `env` (which
+# runs the per-home command with another HOME) does not, so a lookup by name there
+# fails with "env: claude: No such file or directory". The install must still reach
+# it under every home. PATH is closed to that entry and the system directories, so
+# a claude installed on the machine running the tests is never the one found.
+homeP=$(h_fake_home home-p)
+mkdir -p "$invoking/bin"
+ln -s "$tmp/bin/claude" "$invoking/bin/claude"
+h_calls_reset claude
+# The literal tilde is the point of this case, so the two warnings about it are off.
+# shellcheck disable=SC2088,SC2147
+PATH='~/bin:/usr/bin:/bin' run_install tilde -- "$installer" --home "$homeP" --tenant t-one --channel next --token-file "$tokfile"
+h_assert_eq "$(h_run_code tilde)" 0 "tilde PATH: exits 0"
+case "$(h_run_out tilde)" in *"installed $homeP"*) h_ok "tilde PATH: the home is installed" ;; *) h_fail "tilde PATH: not installed: $(h_run_out tilde) $(cat "$tmp/run/tilde.err")" ;; esac
+h_assert_eq "$(grep -l "^HOME=$homeP\$" "$tmp"/claude-env/env.* 2>/dev/null | wc -l | tr -d ' ')" 2 "tilde PATH: claude ran twice under the home's HOME"
+h_assert_eq "$(h_calls claude | grep -c .)" 2 "tilde PATH: two claude calls for the one home"
+rm -f "$invoking/bin/claude"
+# With no claude anywhere on PATH, the run is refused before any home, in one line.
+PATH=/usr/bin:/bin run_install noclaude -- "$installer" --home "$homeP" --tenant t-one --channel next --token-file "$tokfile"
+h_assert_eq "$(h_run_code noclaude)" 2 "no claude: a usage error"
+h_assert_eq "$(grep -c . "$tmp/run/noclaude.err")" 1 "no claude: one line on stderr"
+case "$(cat "$tmp/run/noclaude.err")" in *claude*PATH*) h_ok "no claude: the line names claude and PATH" ;; *) h_fail "no claude: unexpected line: $(cat "$tmp/run/noclaude.err")" ;; esac
+h_assert_empty "$(h_run_out noclaude)" "no claude: nothing on stdout"
 
 # ---------------------------------------------------------------------------------
 # 2. A second run changes nothing and says so.
