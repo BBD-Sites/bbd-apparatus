@@ -99,7 +99,7 @@ done
 
 token=""
 if [ -z "$uninstall" ]; then
-  [ -n "$tenant" ] && [ -n "$channel" ] && [ -n "$token_file" ] || usage
+  if [ -z "$tenant" ] || [ -z "$channel" ] || [ -z "$token_file" ]; then usage; fi
   case "$tenant" in
     [A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._-]*) [ "${#tenant}" -le 64 ] || die "the tenant id is longer than 64 characters" ;;
     *) die "the tenant id may hold letters, digits, . _ and - only" ;;

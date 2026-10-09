@@ -273,6 +273,7 @@ H_APPARATUS_URL="https://github.com/BBD-Sites/bbd-apparatus.git"
 # template); run from the repository, every test's unsigned stand-in head would be
 # refused. From the copy, signing is off until a test puts a file where the bootstrap
 # looks. The shipped file itself is read from h_repo_root by the tests that are about it.
+# shellcheck disable=SC2120  # the argument is optional; shellcheck 0.9 (the Ubuntu runner's) otherwise flags every bare call (SC2119)
 h_bootstrap() {
   local which=${1:-plugin} root src dst
   root=$(h_repo_root)
