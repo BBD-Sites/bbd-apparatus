@@ -332,7 +332,7 @@ homeD=$(h_fake_home home-d)
 homeE=$(h_fake_home home-e)
 mkdir -p "$homeD/sub/.claude"
 rm -f "$invoking/.claude/bbd-apparatus/excluded-homes"
-printf '# the two employer homes\n%s\n' "$homeD" >"$record"
+printf '# the homes the person chooses to skip\n%s\n' "$homeD" >"$record"
 run_install ex -- "$installer" --home "$homeD" --home "$homeD/sub" --home "$homeE" --tenant t-one --channel next --token-file "$tokfile"
 h_assert_eq "$(h_run_code ex)" 1 "excluded: exits 1 when any home is refused"
 out=$(h_run_out ex)

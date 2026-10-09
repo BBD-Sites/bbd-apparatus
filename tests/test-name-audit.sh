@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# No person, login, employer, business or client name anywhere in the repository:
+# No person, login, business, client or workplace name anywhere in the repository:
 # not in a tracked file, not in a tracked path, not in commit metadata. A public
 # repository cannot hold the list it checks against, so the list lives outside it:
 #   1. $NAME_DENYLIST_FILE, if set;

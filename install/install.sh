@@ -157,10 +157,11 @@ login_home() {
 }
 
 # The excluded homes: a standing record at the login home, read once before any home
-# is touched. A record beats a flag that has to be retyped: the employer homes do not
-# change between runs, and a forgotten flag is exactly the failure the exclusion
-# exists to prevent. A missing record is not "none excluded"; an empty file is. With
-# no record, or no login home, every home is refused below, install or uninstall.
+# is touched. A record beats a flag that has to be retyped: the homes the person
+# chooses to skip do not change between runs, and a forgotten flag is exactly the
+# failure the exclusion exists to prevent. A missing record is not "none excluded";
+# an empty file is. With no record, or no login home, every home is refused below,
+# install or uninstall.
 seal_problem=""
 excluded_file=""
 excluded=""
