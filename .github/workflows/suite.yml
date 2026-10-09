@@ -39,10 +39,6 @@ jobs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Full history: resolving an earlier run's tree needs that commit
-          # object, not just this one.
-          fetch-depth: 0
 
       - id: check
         env:
@@ -74,30 +70,23 @@ jobs:
             exit 0
           fi
 
-          runs=$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=${LOOKBACK}&status=success" \
-            --jq '.workflow_runs[] | .head_sha + " " + (.id|tostring)' 2>/dev/null) || true
-          if [ -z "${runs}" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "no successful run history found for workflow id ${wf_id}; running in full"
-            exit 0
-          fi
-
+          # The marker is named for the tree the earlier run actually tested
+          # (a pull request run tests its merge commit, not its head), so the
+          # lookup is by marker name alone; no earlier commit has to be
+          # reachable or share a tree with its own head.
+          cands=$(gh api "repos/${repo}/actions/artifacts?name=full-suite-${tree}&per_page=${LOOKBACK}" \
+            --jq '.artifacts[]? | select(.expired|not) | .workflow_run.id|tostring' 2>/dev/null) || true
           found=""
-          while read -r sha id; do
-            [ -n "${sha}" ] || continue
+          for id in ${cands}; do
             [ "${id}" = "${{ github.run_id }}" ] && continue
-            other_tree=$(git rev-parse "${sha}^{tree}" 2>/dev/null) || continue
-            [ "${other_tree}" = "${tree}" ] || continue
-            marker=$(gh api "repos/${repo}/actions/runs/${id}/artifacts" \
-              --jq ".artifacts[]? | select(.name==\"full-suite-${tree}\") | .name" 2>/dev/null) || continue
-            if [ "${marker}" = "full-suite-${tree}" ]; then
-              echo "run ${id} (${sha}) already covered this tree (${tree}) in full and passed"
+            ok=$(gh api "repos/${repo}/actions/runs/${id}" \
+              --jq "select(.workflow_id==${wf_id} and .conclusion==\"success\") | .id" 2>/dev/null) || continue
+            if [ "${ok}" = "${id}" ]; then
+              echo "run ${id} already covered this tree (${tree}) in full and passed"
               found="${id}"
               break
             fi
-          done <<EOF
-          ${runs}
-          EOF
+          done
 
           if [ -n "${found}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
