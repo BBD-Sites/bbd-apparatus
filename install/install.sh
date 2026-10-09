@@ -12,11 +12,17 @@
 # put in the environment of the `claude` commands this script runs. The summary shows
 # the first six hex digits of its sha256, so the person can tell which token landed.
 #
+# Before any home: the excluded-homes record is read from the LOGIN home, the one the
+# directory service names for the account (`dscl . -read /Users/<user> NFSHomeDirectory`
+# on a Mac, the passwd entry elsewhere), never from $HOME, because a session in a
+# secondary account home runs with HOME rewritten to that home. The record is
+# <login home>/.claude/bbd-apparatus/excluded-homes, one absolute home path per line
+# (an empty file means no home is excluded). With no record there, or no login home,
+# EVERY home is refused: an installer that cannot see the seal must not install.
+#
 # Per home, with HOME and CLAUDE_CONFIG_DIR set to that home, in this order, and the
 # home is refused with nothing written if any step fails:
-#   1. the home is not listed in the invoking login's excluded-homes file
-#      (<config>/bbd-apparatus/excluded-homes, one path per line; a home under a
-#      listed path is excluded too);
+#   1. the home is not listed, and not under a path listed, in that record;
 #   2. <home>/.claude is not inside a git work tree, so tenant.env can never be tracked;
 #   3. the redactor self-test passes in this checkout;
 #   4. <home>/.claude/bbd-apparatus/allowed_signers is written from
@@ -125,20 +131,54 @@ elif [ ! -f "$checkout/bin/apparatus" ]; then
   checkout_problem="no bin/apparatus in $checkout; run this from a checkout of the apparatus repository"
 fi
 
-# The excluded homes: a standing record in the invoking login's own config, read once
-# before any home is touched. A record beats a flag that has to be retyped: the
-# employer homes do not change between runs, and a forgotten flag is exactly the
-# failure the exclusion exists to prevent.
-excluded_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/bbd-apparatus/excluded-homes"
+# The login home: where the account's directory entry says it is, never $HOME. A
+# session in a secondary account home runs with HOME set to that home, so a record
+# kept under $HOME would be a different file in every home, and the login home's,
+# the one that holds the seal, would never be consulted. The rule is the one the
+# maintainers' own tooling states once (hooks/lib/_login-home.sh in their substrate:
+# `dscl . -read /Users/$(id -un) NFSHomeDirectory`, taken when it names a directory);
+# off a Mac the passwd entry answers instead. BBD_INSTALL_LOGIN_HOME is a test-only
+# override so the suite can name a fake login home; it is still required to exist.
+login_home() {
+  local user h=""
+  if [ -n "${BBD_INSTALL_LOGIN_HOME:-}" ]; then
+    h=$BBD_INSTALL_LOGIN_HOME
+  else
+    user=$(id -un) || return 1
+    if command -v dscl >/dev/null 2>&1; then
+      h=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    fi
+    if [ -z "$h" ]; then
+      h=$(python3 -c 'import pwd, sys; print(pwd.getpwnam(sys.argv[1]).pw_dir)' "$user" 2>/dev/null)
+    fi
+  fi
+  [ -n "$h" ] && [ -d "$h" ] || return 1
+  (cd "$h" && pwd -P)
+}
+
+# The excluded homes: a standing record at the login home, read once before any home
+# is touched. A record beats a flag that has to be retyped: the employer homes do not
+# change between runs, and a forgotten flag is exactly the failure the exclusion
+# exists to prevent. A missing record is not "none excluded"; an empty file is. With
+# no record, or no login home, every home is refused below, install or uninstall.
+seal_problem=""
+excluded_file=""
 excluded=""
-if [ -f "$excluded_file" ]; then
-  while IFS= read -r line || [ -n "$line" ]; do
-    line=${line%$'\r'}
-    case "$line" in ''|'#'*) continue ;; esac
-    if resolved=$(cd "$line" 2>/dev/null && pwd -P); then line=$resolved; fi
-    excluded="$excluded$line
+if login=$(login_home); then
+  excluded_file="$login/.claude/bbd-apparatus/excluded-homes"
+  if [ -f "$excluded_file" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=${line%$'\r'}
+      case "$line" in ''|'#'*) continue ;; esac
+      if resolved=$(cd "$line" 2>/dev/null && pwd -P); then line=$resolved; fi
+      excluded="$excluded$line
 "
-  done <"$excluded_file"
+    done <"$excluded_file"
+  else
+    seal_problem="no excluded-homes record at $excluded_file; create it there, holding one absolute path per line for every home that must never carry the apparatus (an empty file means none), then run again"
+  fi
+else
+  seal_problem="could not find the login home (the directory service names none for $(id -un)), so the excluded-homes record cannot be read; nothing was touched"
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/bbd-install.XXXXXX") || die "could not make a temp directory"
@@ -329,6 +369,10 @@ install_home() {
   signers="$base/allowed_signers"
   env_file="$base/tenant.env"
 
+  if [ -n "$seal_problem" ]; then
+    refuse "$home" "$seal_problem"
+    return
+  fi
   if is_excluded "$home"; then
     refuse "$home" "excluded by $excluded_file; nothing was touched"
     return
@@ -408,6 +452,10 @@ uninstall_home() {
   home=$(cd "$given" 2>/dev/null && pwd -P) || { refuse "$given" "not a directory"; return; }
   cfg="$home/.claude"
   base="$cfg/bbd-apparatus"
+  if [ -n "$seal_problem" ]; then
+    refuse "$home" "$seal_problem"
+    return
+  fi
   if is_excluded "$home"; then
     refuse "$home" "excluded by $excluded_file; nothing was touched"
     return
