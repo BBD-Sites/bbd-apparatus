@@ -12,9 +12,12 @@
 # the installer leaves, or in the environment of any `claude` it runs; a second run
 # changes nothing and says so; it refuses a home whose config is inside a git work
 # tree, a checkout with no signers file (or an empty one), a redactor self-test that
-# fails, a plugin the CLI did not enable, and a home listed in the invoking login's
-# excluded-homes file; and --uninstall reverses the enablement, removes the
-# marketplace and tenant.env, and leaves the vault repository alone.
+# fails, a plugin the CLI did not enable, and a home listed in the LOGIN home's
+# excluded-homes record; the record is read from the login home the directory service
+# names, never from $HOME (a session in a secondary account home rewrites HOME), and
+# with no record there every home is refused, so the seal fails closed; and
+# --uninstall reverses the enablement, removes the marketplace and tenant.env, and
+# leaves the vault repository alone.
 set -u
 # shellcheck source=lib/harness.sh
 . "$(dirname "$0")/lib/harness.sh"
@@ -184,12 +187,14 @@ tree_sum() {
   done) | cksum
 }
 
-# run_install NAME [VAR=value ...] -- ARGS...: the installer under env -i, from the
-# fake login home, exactly as h_launch runs a launcher.
+# run_install NAME [VAR=value ...] -- ARGS...: the installer under env -i, exactly as
+# h_launch runs a launcher, with HOME set to a secondary account home (the shape a
+# session in one of several account homes has) and the login home named through the
+# installer's test-only override, so the record it reads must be the login home's.
 run_install() {
   local name=$1
   shift
-  h_launch "$name" "$login" "$@"
+  h_launch "$name" "$invoking" BBD_INSTALL_LOGIN_HOME="$login" "$@"
 }
 
 # The planted token is assembled at run time, so no token shape is ever committed.
@@ -200,6 +205,8 @@ tokfile="$tmp/token.txt"
 
 make_fake_claude
 login=$(h_fake_home login)
+invoking=$(h_fake_home parall-homes/other)
+record="$login/.claude/bbd-apparatus/excluded-homes"
 homeA=$(h_fake_home home-a)
 homeB=$(h_fake_home home-b)
 # A vault repository, to show an uninstall leaves it alone.
@@ -207,9 +214,35 @@ vault=$(h_fake_repo vault)
 vault_head=$(git -C "$vault" rev-parse HEAD)
 
 # ---------------------------------------------------------------------------------
+# 0. The seal fails closed. With no excluded-homes record at the login home, every
+# home is refused and the line says where to create the record and what it holds; a
+# record in the invoking HOME is not the login home's and counts for nothing.
+mkdir -p "$invoking/.claude/bbd-apparatus"
+printf '%s\n' "$homeA" >"$invoking/.claude/bbd-apparatus/excluded-homes"
+run_install norecord -- "$installer" --home "$homeA" --home "$homeB" --tenant t-one --channel next --token-file "$tokfile"
+h_assert_eq "$(h_run_code norecord)" 1 "no record: exits 1"
+out=$(h_run_out norecord)
+h_assert_eq "$(printf '%s\n' "$out" | grep -c '^refused ')" 2 "no record: every home is refused"
+case "$out" in *"refused $homeA: "*"$record"*"one absolute"*) h_ok "no record: the line names the record to create and what it holds" ;; *) h_fail "no record: the line does not say where to create the record: $out" ;; esac
+assert_absent "$homeA/.claude/bbd-apparatus" "no record: nothing written under home A"
+assert_absent "$homeB/.claude/bbd-apparatus" "no record: nothing written under home B"
+h_assert_empty "$(h_calls claude)" "no record: no claude call"
+run_install nologin BBD_INSTALL_LOGIN_HOME="$tmp/nowhere" -- "$installer" --home "$homeA" --tenant t-one --channel next --token-file "$tokfile"
+h_assert_eq "$(h_run_code nologin)" 1 "no login home: exits 1"
+case "$(h_run_out nologin)" in *"refused $homeA: "*"login home"*) h_ok "no login home: refused, naming the login home" ;; *) h_fail "no login home: not refused: $(h_run_out nologin)" ;; esac
+h_assert_empty "$(h_calls claude)" "no login home: no claude call"
+run_install norecord-un -- "$installer" --uninstall --home "$homeA"
+h_assert_eq "$(h_run_code norecord-un)" 1 "no record: an uninstall is refused too"
+
+# An empty record at the login home means no home is excluded. The invoking HOME's
+# record still names home A, and is ignored: home A installs.
+mkdir -p "$login/.claude/bbd-apparatus"
+: >"$record"
+
+# ---------------------------------------------------------------------------------
 # 1. Install on two homes.
 run_install one -- "$installer" --home "$homeA" --home "$homeB" --tenant t-one --channel next --token-file "$tokfile"
-h_assert_eq "$(h_run_code one)" 0 "install: exits 0"
+h_assert_eq "$(h_run_code one)" 0 "install: exits 0 (the invoking HOME's record naming home A counts for nothing)"
 out=$(h_run_out one)
 h_assert_eq "$(printf '%s\n' "$out" | grep -c '^installed ')" 2 "install: one installed line per home"
 case "$out" in *"installed $homeA"*) h_ok "install: names home A" ;; *) h_fail "install: does not name home A" ;; esac
@@ -293,11 +326,13 @@ case "$(h_run_out wt)" in *"refused $homeC"*"work tree"*) h_ok "work tree: refus
 assert_absent "$homeC/.claude/bbd-apparatus" "work tree: nothing written"
 h_assert_empty "$(h_calls claude)" "work tree: no claude call"
 
-# b. A home in the invoking login's excluded-homes file, and a home under one.
+# b. A home in the login home's excluded-homes record, and a home under one, while
+# HOME is a secondary account home that holds no such record.
 homeD=$(h_fake_home home-d)
 homeE=$(h_fake_home home-e)
-mkdir -p "$homeD/sub/.claude" "$login/.claude/bbd-apparatus"
-printf '# the two employer homes\n%s\n' "$homeD" >"$login/.claude/bbd-apparatus/excluded-homes"
+mkdir -p "$homeD/sub/.claude"
+rm -f "$invoking/.claude/bbd-apparatus/excluded-homes"
+printf '# the two employer homes\n%s\n' "$homeD" >"$record"
 run_install ex -- "$installer" --home "$homeD" --home "$homeD/sub" --home "$homeE" --tenant t-one --channel next --token-file "$tokfile"
 h_assert_eq "$(h_run_code ex)" 1 "excluded: exits 1 when any home is refused"
 out=$(h_run_out ex)
