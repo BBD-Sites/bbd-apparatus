@@ -18,20 +18,18 @@
 # matching text, because CI logs of a public repository are public and the list is
 # the secret.
 #
-# Four checks need no list: every commit's author email is the neutral identity,
-# and its committer is too, or is GitHub's own web-flow identity, which a rebase
-# merge on GitHub writes as committer (merges here are rebase only, so the author
-# stays neutral); no home-directory path; no email address but the neutral one;
-# no GitHub owner but this repository's own.
+# Four checks need no list: every commit's author and committer are both the neutral
+# identity, and nothing else is accepted. A pull request lands by a fast-forward push
+# of its signed head, which creates no commit, and the channel rulesets require signed
+# commits, so neither a merge made under a person's login nor GitHub's own web-flow
+# identity can reach a channel (design D41). Then: no home-directory path; no email
+# address but the neutral one; no GitHub owner but this repository's own.
 set -u
 # shellcheck source=lib/harness.sh
 . "$(dirname "$0")/lib/harness.sh"
 h_init
 
 ALLOWED_EMAIL="apparatus-maintainers@users.noreply.github.com"
-# GitHub's web-flow committer, assembled so the email scan below does not flag this
-# file; it is accepted only as a committer, never as an author.
-GITHUB_COMMITTER="noreply""@github.com"
 ALLOWED_OWNER="BBD-Sites"
 # The owner this repository had before it moved (design D41). Any mention of it now is
 # a stale address, and the frozen bootstrap must never fetch from it, so it is refused
@@ -89,8 +87,8 @@ LIST
 audit_static() {
   local repo=$1
   git -C "$repo" log --format='%H %ae %ce' HEAD 2>/dev/null \
-    | awk -v ok="$ALLOWED_EMAIL" -v gh="$GITHUB_COMMITTER" \
-        '$2 != ok || ($3 != ok && $3 != gh) { print "commit " substr($1, 1, 12) " carries an identity other than the neutral one" }' \
+    | awk -v ok="$ALLOWED_EMAIL" \
+        '$2 != ok || $3 != ok { print "commit " substr($1, 1, 12) " carries an identity other than the neutral one" }' \
     | sort -u
   git -C "$repo" grep -c -I -E -e "$HOME_PATH_RE" -- . 2>/dev/null \
     | sed 's/^/home-directory path in file /' || true
@@ -112,7 +110,10 @@ audit_static() {
 # synthetic list and a planted repository prove each check catches what it is for
 # and that the repository's own name survives the word-boundary rule.
 self_check() {
-  local fake list out at="@"
+  local fake list out at="@" web_flow
+  # GitHub's web-flow identity, what a merge button writes as committer. Assembled so
+  # the email scan below does not flag this file.
+  web_flow="noreply${at}github.com"
   fake=$(h_fake_repo planted)
   list="$H_TMP/synthetic-list.txt"
   printf '%s\n' '# a comment line' '' 'Quentin Exampleperson' 'acme-ops' >"$list"
@@ -155,8 +156,9 @@ self_check() {
     *) h_fail "self-check: a name in a commit message was missed" ;;
   esac
 
-  # A rebase merge on GitHub keeps the neutral author and writes GitHub's own
-  # committer; that pair passes, and every other mix with a foreign email fails.
+  # Nothing but the neutral identity ever commits here. A landing is a fast-forward
+  # push that creates no commit, so GitHub's web-flow identity as committer, which a
+  # merge button writes, fails like every other mix with a foreign email.
   identity_case() {
     local label=$1 author=$2 committer=$3 want=$4 r got
     r=$(h_fake_repo "identity-$label")
@@ -166,11 +168,12 @@ self_check() {
     case "$(audit_static "$r")" in *"identity other than the neutral one"*) got=fail ;; esac
     h_assert_eq "$got" "$want" "self-check: identity case $label is a $want"
   }
-  identity_case rebase-merge "$ALLOWED_EMAIL" "$GITHUB_COMMITTER" pass
-  identity_case github-author "$GITHUB_COMMITTER" "$GITHUB_COMMITTER" fail
-  identity_case github-author-neutral-committer "$GITHUB_COMMITTER" "$ALLOWED_EMAIL" fail
+  identity_case neutral "$ALLOWED_EMAIL" "$ALLOWED_EMAIL" pass
+  identity_case web-flow-committer "$ALLOWED_EMAIL" "$web_flow" fail
+  identity_case web-flow-author "$web_flow" "$web_flow" fail
+  identity_case web-flow-author-neutral-committer "$web_flow" "$ALLOWED_EMAIL" fail
   identity_case foreign-committer "$ALLOWED_EMAIL" "someone${at}example.org" fail
-  identity_case foreign-author "someone${at}example.org" "$GITHUB_COMMITTER" fail
+  identity_case foreign-author "someone${at}example.org" "$ALLOWED_EMAIL" fail
 
   git -C "$fake" -c user.email="someone${at}example.org" commit -q --allow-empty -m "chore: other identity"
   printf '%s\n' "/Use""rs/someone/notes" "write to someone${at}example.org" \
