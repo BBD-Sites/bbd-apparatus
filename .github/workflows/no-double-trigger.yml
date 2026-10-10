@@ -1,0 +1,64 @@
+name: no-double-trigger
+
+# Installed by Personal-Tooling/system claude-substrate/scripts/
+# sweep-install-personal-ci-checks.sh. Do not edit it here: the installer
+# replaces any copy that differs from the canonical one.
+#
+# A pull request that adds or changes a workflow so that one change runs it
+# more than once (a pull_request or merge_group run, then a push run on the
+# branch the change lands on, with nothing that skips the second) fails this
+# check, which names the events. That shape ran builtbyduo-ops' CI 470 times in
+# three days in October 2026, after being fixed in two other repositories that
+# nobody else heard about.
+#
+# The definition is _multi-trigger-predicate.py beside this file: a byte-for-
+# byte copy of es-runtime scripts/spend-management/multi_trigger_predicate.py,
+# the same file the daily fleet scan reads, so the check and the scan cannot
+# disagree. Only the workflow files this pull request adds or changes are read;
+# a workflow nobody touched is the daily scan's to report, not this check's to
+# block.
+#
+# It is not itself a double trigger: pull_request and merge_group, no push. It
+# always reports, so it can be a required check without holding a pull request
+# that touches no workflow.
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  no-double-trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: No workflow runs twice for one change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          set -uo pipefail
+          changed=()
+          while IFS= read -r f; do
+            case "$f" in .github/workflows/*.yml|.github/workflows/*.yaml) changed+=("$f") ;; esac
+          done < <(git diff --name-only --diff-filter=AMR "$BASE_SHA" HEAD)
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "No workflow file added or changed; nothing to check."
+            exit 0
+          fi
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          rc=0
+          out=$(python3 .github/workflows/_multi-trigger-predicate.py --strict --all \
+                --slug "$GITHUB_REPOSITORY" "${changed[@]}") || rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            printf '%s\n' "$out" | while IFS='|' read -r _repo wf verdict events why; do
+              [ "$verdict" = clean ] && continue
+              echo "::error file=.github/workflows/${wf}::${verdict}: ${events}. ${why}"
+            done
+            exit 1
+          fi
