@@ -1,0 +1,12 @@
+# Phrases the outward-verb test (tests/test-never-outward.sh) would read as an instruction to
+# act outward and a person judged descriptive: a sentence that contains one passes. One per
+# line, spaces folded, lower case. Every line needs a reason on the line above it. Keep this
+# list short; a phrase here must be too specific to hide a real instruction.
+
+# The reader's own answer word ("send" or "fix" as its verdict about a draft); it posts nothing.
+send or fix
+
+# The read-draft skill's howto: "send" is the reply the model is about to give the person in
+# this same chat, which is the person asking, not anyone outside.
+text you are about to send
+send when the verdict is send
