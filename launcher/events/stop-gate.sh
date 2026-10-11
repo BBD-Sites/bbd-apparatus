@@ -12,7 +12,9 @@
 #      turn's one block is spent, so the pass is ADVISORY: the reader still runs and
 #      its receipt is written (advisory=1), but nothing can be held and no hand-back
 #      is made (design D28: the reader judges the reply; the grade and the ask check
-#      are only flags).
+#      are only flags). One exception: when the first block carried no reader finding
+#      and this pass's reader says fix, ONE more block is allowed (a score may have been
+#      chased); lib/loopguard.py holds the cap of two blocks per turn.
 #   3. Under 50 prose words there is nothing to read and nothing is held for asks.
 #      The rules file the marker names is read against when it exists; a repository
 #      with none is read against the reply contract alone.
@@ -152,8 +154,21 @@ case "$status" in
 esac
 blocked=0
 parts=""
-if [ "$advisory" = 0 ] && { [ "$verdict" = fix ] || [ -n "$handback" ] || [ -n "$hard" ] || [ -n "$asks_left" ]; }; then
-  if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
+# One more block, in one case only: the first block carried deterministic findings and no
+# reader finding (the writer may have chased the score by chopping sentences), and the
+# reader's verdict on the second pass is fix. The guard holds the cap of two.
+extra=0
+cap=1
+tag=det
+if [ "$verdict" = fix ] || [ -n "$handback" ]; then tag=reader; fi
+if [ "$advisory" = 1 ] && [ "$verdict" = fix ] \
+    && [ "$(python3 "$BBD_CHECKOUT/lib/loopguard.py" tag "$guard" "$sid" "$turn" 2>>"$BBD_LOG")" = det ]; then
+  extra=1
+  cap=2
+fi
+if { [ "$advisory" = 0 ] && { [ "$verdict" = fix ] || [ -n "$handback" ] || [ -n "$hard" ] || [ -n "$asks_left" ]; }; } \
+    || [ "$extra" = 1 ]; then
+  if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" "$cap" "$tag" 2>>"$BBD_LOG"; then
     blocked=1
     parts=$(mktemp "$BBD_BASE/state/parts.XXXXXX" 2>/dev/null) || exit 0
     {
@@ -201,7 +216,7 @@ rm -f "$parts" 2>/dev/null
 if [ "$read_already" = 0 ]; then
   python3 "$BBD_CHECKOUT/lib/receipt.py" write "$receipts" "$draft" \
     "session=$sid" "prompt_id=$pid" "status=$status" "verdict=$verdict" "findings=${count:-0}" \
-    "blocked=$blocked" "advisory=$advisory" "grade_flag=$([ -n "$hard" ] && echo 1 || echo 0)" \
+    "blocked=$blocked" "advisory=$advisory" "second_block=$extra" "grade_flag=$([ -n "$hard" ] && echo 1 || echo 0)" \
     "asks_flag=$([ -n "$asks_left" ] && echo 1 || echo 0)" "elapsed=${elapsed:-0}" \
     "stop_reason=$stop_reason" "words=$words" \
     >/dev/null 2>>"$BBD_LOG" || bbd_log "stop-gate: the receipt could not be written"

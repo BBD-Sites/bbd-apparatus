@@ -207,7 +207,7 @@ CFG/bbd-apparatus/
     fetch.stamp              when the last fetch finished
     compactions/<session_id> the session's compaction count
     reader/<draft hash>.json the reader's receipt for one draft (section 13)
-    loopguard/<session_id>.turn  the turn last blocked, and how many times
+    loopguard/<session_id>.turn  the turn last blocked, how many times (at most 2) and what the last block carried
     draft.md                 a draft the person gave the read-draft skill; consumed by it
     launcher.log             errors, rotated and redacted
 ```
@@ -596,9 +596,10 @@ measuring a week of replies before the ceiling is changed.
 
 **When it reads.** Two things first. On the second pass of a turn (`stop_hook_active` is
 true: this Stop follows a block) the read is **advisory**: the ask check and the
-reading-level check add nothing because the turn's one block is spent, the reader still
+reading-level check add nothing because the turn's block is spent, the reader still
 runs under the same bound, its receipt is written with `advisory=1`, and its verdict is
-only recorded, never printed as a block; a cloud session's hand-back is not used either.
+only recorded, never printed as a block (except in the one case under "a score chased",
+below); a cloud session's hand-back is not used either.
 Without this, a corrected reply went out unread and with no receipt (design D28: the
 reader judges the reply; the grade is only a flag). Then both of these must hold, on
 either pass; otherwise the step exits 0 with nothing printed and one line in the log
@@ -660,11 +661,25 @@ run and a block would only hold the person up.
 **The block** is `{"decision":"block","reason":"..."}`, the reason being the reader's
 findings, one per line with their heading, under one sentence asking for the corrected
 reply (at most 4,000 characters for that part), followed by the reading-level and
-missing-ask parts when they exist. It is printed at most once per turn: `lib/loopguard.py` keeps
-`state/loopguard/<session_id>.turn` keyed by `prompt_id` (the harness's own turn
-identity), or by the draft's hash when the hook carries no `prompt_id`, and a second
-`fix` in the same turn is logged and let through. `stop_hook_active` is the first line
-of that guard; the file is the second, for a harness that does not send the field.
+missing-ask parts when they exist. It is printed at most once per turn, with one exception
+below: `lib/loopguard.py` keeps `state/loopguard/<session_id>.turn` keyed by `prompt_id`
+(the harness's own turn identity), or by the draft's hash when the hook carries no
+`prompt_id`, and a second `fix` in the same turn is logged and let through.
+`stop_hook_active` is the first line of that guard; the file is the second, for a
+harness that does not send the field.
+
+**The one exception: a score chased.** When the first block carried only deterministic
+findings (the grade and/or the missing asks) and no reader finding, the writer may have
+chopped sentences into fragments to pass the grader. So on the second pass, and only
+then, a reader verdict of `fix` gets ONE more block, carrying the reader's findings alone.
+If the first block already carried the reader's findings (or a cloud hand-back), the
+second pass stays advisory. The guard records what the last block carried
+(`<turn key> <count> det|reader` in the `.turn` file; `loopguard.py tag` prints it) and
+holds the cap itself: no caller can obtain more than two blocks in a turn
+(`MAX_CAP`), a third pass can never block, and any error in the guard (a session id that
+is not a plain word, an unwritable directory, a damaged record) reads as "no tag", so
+it never creates a block. The receipt of such a pass records `blocked=1` and
+`second_block=1`.
 
 **The receipt**, `lib/receipt.py`, is written for every read and every attempt, never
 for a skip: session, prompt_id, status (`read`, `unparseable`, `empty`, `no-claude`,
@@ -793,7 +808,9 @@ document that already covers it and, if it finds one, prints a PreToolUse decisi
 It refuses once per new name per session (`state/dupguard/<session_id>`): a second
 attempt at the same name goes through, because the model has by then been told and the
 work is, on its word, different. It never refuses a write to a change that exists, a path
-outside the repository, or anything that is not a change. It fails open: an input in a
+outside the repository, or anything that is not a change. A hook with no usable session
+id (empty, or not a plain word) has nowhere to remember the refusal, so it is never
+refused at all: the write goes ahead, and a refusal cannot repeat. It fails open: an input in a
 shape it does not know, or a folder it cannot read, prints nothing and the write goes
 ahead. Only the tools in the hook's matcher are seen; a change scaffolded by a shell
 command is not.

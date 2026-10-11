@@ -210,6 +210,55 @@ h_assert_eq "$(reads)" 1 "the second pass after a reading-level hold is read"
 rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard3.md" 2>/dev/null)
 case "$rcpt" in *'"verdict": "fix"'*'"blocked": 0'*|*'"blocked": 0'*'"verdict": "fix"'*) h_ok "the receipt records the fix verdict and no block" ;; *) h_fail "the advisory receipt is wrong: [$rcpt]" ;; esac
 
+# 2c. A score chased. The first block carried only the grade; the writer chops the
+# sentences into fragments to pass it; the second-pass reader says fix. That is the one
+# case where a second block is allowed, quoting the reader's findings. It is the last:
+# the cap is two blocks per turn.
+cat >"$tmp/fix-frag.txt" <<'EOF2'
+VERDICT: fix
+RESTATE
+- none
+CHAIN
+- none
+THE PERSON'S WORDS
+- none
+CLAIMS
+- none
+ANSWERED
+- none
+OWNER VOICE
+- none
+VALUE
+- 5 sentences or bullets in the body
+READING
+- "Config bad. Fixed. Done.": fragments, not sentences; say each idea in a full plain sentence
+CONTRACT
+- none
+EOF2
+h_calls_reset claude
+{ cat "$tmp/hard.md"; printf '\nThe rollout was repeated on the staging environment afterwards.\n'; } >"$tmp/hard-chase.md"
+stop chase1 s8 p30 "$tmp/hard-chase.md"
+h_assert_eq "$(decision chase1)" block "chased: the first pass holds on the grade alone"
+if has "$(reason chase1)" "A reader read this reply"; then h_fail "chased: the first block carried reader findings"; else h_ok "chased: the first block carried only the grade"; fi
+{ printf 'Config bad. Redirect wrong. Fixed it. Checked prod. Form works. Old endpoint gone. Site unchanged. Nothing needed.\n'; printf 'Everything else on the site is the same as it was and you do not need to do anything. The page loads fast. The form sends mail. The photos are small. The text is short. Ask me if you want more.\n'; } >"$tmp/frag1.md"
+READER_OUT="$tmp/fix-frag.txt" stop chase2 s8 p30 "$tmp/frag1.md" stop_hook_active=true
+h_assert_eq "$(decision chase2)" block "chased: a second-pass reader fix gets one more block"
+if has "$(reason chase2)" "fragments, not sentences"; then h_ok "chased: the second block quotes the reader's finding"; else h_fail "chased: the second block lacks the finding: $(reason chase2)"; fi
+if has "$(reason chase2)" "harder to read"; then h_fail "chased: the second block repeated the grade"; else h_ok "chased: the second block is the reader's alone"; fi
+{ cat "$tmp/frag1.md"; printf 'One more edit was made.\n'; } >"$tmp/frag2.md"
+READER_OUT="$tmp/fix-frag.txt" stop chase3 s8 p30 "$tmp/frag2.md" stop_hook_active=true
+h_assert_empty "$(h_run_out chase3)" "chased: a third pass cannot block"
+rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/frag2.md" 2>/dev/null)
+case "$rcpt" in *'"blocked": 0'*) h_ok "chased: the third pass receipt records no block" ;; *) h_fail "chased: the third pass receipt is wrong: [$rcpt]" ;; esac
+# The cap is held in the guard itself, whatever a caller asks for.
+guard_dir="$tmp/guard-cap"
+python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a1=$?
+python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a2=$?
+python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a3=$?
+h_assert_eq "$a1$a2$a3" "001" "the guard never allows a third block in a turn, even asked for nine"
+# A first block that carried the reader's findings leaves the second pass advisory:
+# that is the both/both2 case above (reader fix plus grade, then the second pass is silent).
+
 # 3. A harness that does not send stop_hook_active: the loop guard still caps it at one.
 stop capped s1 p1 "$tmp/hard.md"
 h_assert_empty "$(h_run_out capped)" "the same turn is not held a second time"
