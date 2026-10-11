@@ -191,7 +191,7 @@ def find_match(root: str, name: str, text: str) -> str:
 def already_refused(state: str, sid: str, name: str) -> bool:
     """True when this name was refused in this session before; records it when not."""
     if not SESSION_ID.fullmatch(sid or ""):
-        return False
+        return True  # no usable session to remember the refusal in: let it through, so it cannot repeat
     path = os.path.join(state, sid)
     try:
         with open(path, encoding="utf-8") as f:

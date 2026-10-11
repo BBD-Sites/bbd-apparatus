@@ -140,6 +140,15 @@ chmod 755 "$repo/openspec/changes"
 h_assert_hook_run unreadable "an unreadable changes folder"
 h_assert_empty "$(h_run_out unreadable)" "an unreadable changes folder is let through"
 
+# 9b. A session with no usable id cannot be told once, so it is never told: let through.
+write noid "" Write "$(new site-redesign-v5)" "## Why
+Something."
+h_assert_hook_run noid "a hook with no session id"
+h_assert_empty "$(h_run_out noid)" "no session id: the write is let through, so a refusal cannot repeat"
+write badid "../x" Write "$(new site-redesign-v5)" "## Why
+Something."
+h_assert_empty "$(h_run_out badid)" "a session id that is a path: the write is let through"
+
 # 10. Nothing in the repository changed, and the log says why a refusal happened.
 h_assert_eq "$(snapshot)" "$before" "the repository is untouched by every check"
 if [ -d "$base/state" ]; then h_ok "the state directory exists once the gate has opened"; else h_fail "no state directory"; fi
