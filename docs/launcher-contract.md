@@ -678,8 +678,10 @@ hand-back) leaves the second pass advisory. The guard records what the last bloc
 (`<turn key> <count> grade|other` in the `.turn` file; `loopguard.py tag` prints it) and
 holds the cap itself: no caller can obtain more than two blocks in a turn (`MAX_CAP`), a
 third pass can never block, and any error in the guard (a session id that is not a plain
-word, an unwritable directory, a damaged record) reads as "no tag", so it never creates a
-block. The receipt of such a pass records `blocked=1` and `second_block=1`; every receipt
+word, an unwritable directory, a damaged record, a record that cannot be written) reads as
+"no tag" and refuses any block beyond the first, so a fault can never make the extra block
+repeat. The first block alone fails open: a fault in the guard cannot hold back the one
+block a turn is owed. The receipt of such a pass records `blocked=1` and `second_block=1`; every receipt
 also records `grade_flag` and `asks_flag` (whether the first-pass block quoted hard
 sentences or listed missing asks).
 

@@ -23,9 +23,11 @@ rewritten reply too would hold the turn open for as long as it kept finding thin
 corrective pass is the help; the rest is noise. The second pass is let through whatever
 the reader says.
 
-Fail open: a session id that is not a plain word, an unwritable directory or a damaged
-record all exit 0, because the guard only ever suppresses a block and must never
-introduce one.
+Fail open for the first block: a session id that is not a plain word, an unwritable
+directory or a damaged record all exit 0, because the guard only ever suppresses a block
+and must never introduce one. Fail closed for any block beyond the first (cap above 1):
+if the count cannot be recorded, the call exits 1, so a fault can never make the extra
+block repeat.
 """
 from __future__ import annotations
 
@@ -77,13 +79,17 @@ def tag_of(guard_dir: str, sid: str, turn_key: str) -> str:
 
 def allow(guard_dir: str, sid: str, turn_key: str, cap: int, tag: str = "") -> bool:
     cap = min(max(1, cap), MAX_CAP)
+    # A first block that cannot be counted still goes out (the guard never introduces a
+    # block, but it may fail to suppress the only one). Any block beyond the first needs
+    # the count to be on record: a fault means no extra block, so it cannot repeat.
+    fault = cap <= 1
     if not SESSION_ID.fullmatch(sid or "") or not turn_key:
-        return True
+        return fault
     try:
         os.makedirs(guard_dir, mode=0o700, exist_ok=True)
         os.chmod(guard_dir, 0o700)
     except OSError:
-        return True
+        return fault
     prune(guard_dir)
     path = os.path.join(guard_dir, sid + ".turn")
     stored_key, count, _old = read_record(path)
@@ -96,7 +102,7 @@ def allow(guard_dir: str, sid: str, turn_key: str, cap: int, tag: str = "") -> b
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(("%s %d %s\n" % (turn_key, count + 1, tag)) if tag else ("%s %d\n" % (turn_key, count + 1)))
     except OSError:
-        return True
+        return fault
     return True
 
 

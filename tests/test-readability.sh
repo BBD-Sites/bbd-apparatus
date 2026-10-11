@@ -263,6 +263,28 @@ python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a1=$?
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a2=$?
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a3=$?
 h_assert_eq "$a1$a2$a3" "001" "the guard never allows a third block in a turn, even asked for nine"
+# A guard that cannot write its record fails closed for the extra block: the first block
+# went out, the record becomes unwritable, and no later pass can block (not once, not ever).
+guard_dir2="$tmp/guard-ro"
+python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir2" gr t1 1 grade; r1=$?
+chmod 444 "$guard_dir2/gr.turn"
+python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir2" gr t1 2 grade; r2=$?
+python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir2" gr t1 2 grade; r3=$?
+chmod 644 "$guard_dir2/gr.turn"
+h_assert_eq "$r1$r2$r3" "011" "a record that cannot be written: the cap-2 call refuses, every time"
+# And through the gate: the first block quotes the grade, the record goes read-only, the
+# second-pass reader says fix, and nothing blocks.
+{ cat "$tmp/hard.md"; printf '\nA different closing line for the read-only record case.\n'; } >"$tmp/hard-ro.md"
+stop ro1 s9 p40 "$tmp/hard-ro.md"
+h_assert_eq "$(decision ro1)" block "read-only record: the first block still goes out"
+chmod 444 "$home/.claude/bbd-apparatus/state/loopguard/s9.turn"
+{ cat "$tmp/frag1.md"; printf 'Read-only record, pass two.\n'; } >"$tmp/frag-ro2.md"
+{ cat "$tmp/frag1.md"; printf 'Read-only record, pass three.\n'; } >"$tmp/frag-ro3.md"
+READER_OUT="$tmp/fix-frag.txt" stop ro2 s9 p40 "$tmp/frag-ro2.md" stop_hook_active=true
+h_assert_empty "$(h_run_out ro2)" "read-only record: a second-pass reader fix cannot block"
+READER_OUT="$tmp/fix-frag.txt" stop ro3 s9 p40 "$tmp/frag-ro3.md" stop_hook_active=true
+h_assert_empty "$(h_run_out ro3)" "read-only record: a third pass cannot block either"
+chmod 644 "$home/.claude/bbd-apparatus/state/loopguard/s9.turn"
 # A first block that carried the reader's findings but NOT the grade leaves the second
 # pass advisory: see the ask-ledger test (reader fix plus a missing ask, then silence).
 
