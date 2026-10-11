@@ -15,15 +15,18 @@
 #      is read against when it exists; a repository with none is read against the
 #      reply contract alone.
 #   4. A receipt for this exact draft (lib/receipt.py) means it was read already.
-#   5. The reader runs under a bound (60 seconds; BBD_READER_BOUND overrides, 1 to 600)
+#   5. The reading level (lib/readability.py, pure python): a reply above the fifth-grade
+#      ceiling is held once with the hard sentences quoted, before the reader is paid for
+#      (design D24).
+#   6. The reader runs under a bound (60 seconds; BBD_READER_BOUND overrides, 1 to 600)
 #      with the reply contract, the rules file, the session's open asks and the draft.
-#   6. A verdict of fix becomes one block, at most once per turn (lib/loopguard.py,
+#   7. A verdict of fix becomes one block, at most once per turn (lib/loopguard.py,
 #      keyed by the session and prompt_id, else the draft's hash). A verdict of send,
 #      and an answer out of shape, lets the reply through. When the reader itself
 #      could not run (no `claude`, a timeout, a non-zero exit): on a desktop home the
 #      reply goes through, logged; in a cloud session the same one block hands the
 #      model the assembled prompt to give to a reader through the Agent tool.
-#   7. A receipt is written for every read and every attempt, never for a skip.
+#   8. A receipt is written for every read and every attempt, never for a skip.
 # Stdout here becomes the Stop decision, so nothing but that one object is printed.
 # shellcheck source=../lib/common.sh
 . "$BBD_CHECKOUT/launcher/lib/common.sh" || exit 0
@@ -115,9 +118,32 @@ if python3 "$BBD_CHECKOUT/lib/receipt.py" exists "$receipts" "$draft" 2>>"$BBD_L
   exit 0
 fi
 
+# 5. The reading level, measured before anything is paid for (design D24). The grader
+# ships here (lib/readability.py: pure python, no network); a reply above the ceiling
+# is held once with the sentences a reader would stumble on quoted, and the reply
+# that follows is the second pass and goes through. A deterministic hold, so the
+# reader is not run on a reply that is about to be rewritten. It is a flag, never a
+# target: the message says to cut the idea or say it plainly, not to chop it up.
+hard=$(python3 "$BBD_CHECKOUT/lib/readability.py" check "$draft" 2>>"$BBD_LOG")
+if [ -n "$hard" ]; then
+  if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
+    printf '%s\n' "$hard" | awk -F'\t' '
+      NR == 1 {
+        printf "This reply is harder to read than the person can follow: it grades at %s, and the ceiling is %s. ", $1, $2
+        printf "These are the sentences a reader would stumble on. Say each one in plainer words, or cut the idea it carries. "
+        printf "Do not chop sentences into fragments, and do not add or drop a fact. Then send the reply again.\n\n"
+        next
+      }
+      { printf "- \"%s\" (grade %s)\n", $2, $1 }' | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
+    bbd_log "stop-gate: held once for reading level; $(( $(printf '%s\n' "$hard" | wc -l) - 1 )) sentence(s) quoted"
+    exit 0
+  fi
+  bbd_log "stop-gate: above the reading ceiling, but a block already happened this turn; the reply goes through"
+fi
+
 stop_reason=$(field stop_reason)
 
-# 5. The reader.
+# 6. The reader.
 result=$(mktemp "$BBD_BASE/state/verdict.XXXXXX" 2>/dev/null) || exit 0
 python3 "$BBD_CHECKOUT/reader/reader.py" read \
   --draft "$draft" --contract "$BBD_CHECKOUT/text/reply-contract.md" \
@@ -129,7 +155,7 @@ elapsed=$(jget "$result" elapsed)
 [ -n "$status" ] || status=failed
 [ "$verdict" = fix ] || verdict=send
 
-# 6. One block per turn: the reader's findings, or, in a cloud session where the
+# 7. One block per turn: the reader's findings, or, in a cloud session where the
 # reader could not run (no `claude` on the machine, a timeout, a failure), the
 # assembled prompt handed to the model to give to a reader of its own through the
 # Agent tool. On a desktop home that failure lets the reply through, logged.
@@ -160,7 +186,7 @@ if [ "$verdict" = fix ] || [ -n "$handback" ]; then
   fi
 fi
 
-# 7. The receipt.
+# 8. The receipt.
 python3 "$BBD_CHECKOUT/lib/receipt.py" write "$receipts" "$draft" \
   "session=$sid" "prompt_id=$pid" "status=$status" "verdict=$verdict" "findings=${count:-0}" \
   "blocked=$blocked" "elapsed=${elapsed:-0}" "stop_reason=$stop_reason" "words=$words" \

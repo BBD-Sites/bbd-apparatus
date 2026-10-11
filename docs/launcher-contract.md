@@ -552,6 +552,21 @@ and a reply held for the ledger is not also sent to the reader. A shorter reply 
 held for this; it can still close the asks it names. A session with no ledger has
 nothing to check.
 
+**The reading-level check** (design D24) comes after the ask check and the 50-word floor,
+and before the reader is paid for. `lib/readability.py` ships here: pure python 3, no
+network, nothing to install. It grades the reply's prose (fenced code, inline code, link
+addresses, identifiers and everything under a line that is only `---` are left out) with
+the Flesch-Kincaid grade level, and a reply is over the ceiling when the whole text grades
+above `CEILING_REPLY` (5, his to change; `CEILING_COPY` is 3, for copy a buyer's own
+customers read) and at least one sentence of eight words or more grades above it too.
+Such a reply is held once, with the hardest sentences (at most five, worst first) quoted
+under one sentence that says to cut the idea or say it in plainer words, never to chop it
+into fragments. It uses the turn's one block: the reply that follows is the second pass and
+goes through whatever it grades, and the reader does not run on a reply that is about to be
+rewritten. The score is a flag, never a target; what decides whether a reply is ready is the
+reader's pass. `readability.py grade FILE` prints a text's grade, for measuring a week of
+replies before the ceiling is changed.
+
 **When it reads.** All of these must hold, in this order; otherwise the step exits 0
 with nothing printed and one line in the log saying which failed:
 
