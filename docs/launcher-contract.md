@@ -200,6 +200,9 @@ CFG/bbd-apparatus/
     selftest-<sha>.ok        a passed redactor self-test for that checkout
     ship-status.json         how the last ship step ended, and how many entries wait
     ship.lock/               held while a ship step drains the queue
+    sync.lock/               held while the vault is being saved (section 14)
+    settle/<repo hash>.txt   pages that hold two versions, for the next prompt (section 14)
+    dupguard/<session_id>    new change names the duplicate guard has refused once (section 15)
     outbox/                  a rendered copy while it is being sent; emptied by every run
     fetch.stamp              when the last fetch finished
     compactions/<session_id> the session's compaction count
@@ -242,8 +245,9 @@ repository's `captures` branch instead.
 ## 10. The ship step
 
 `launcher/events/stop-ship.sh` runs on Stop: asynchronously in the plugin, and
-synchronously in a cloud session's repository copy. It is the only step that sends
-anything off the machine.
+synchronously in a cloud session's repository copy. It is the only step that sends a
+transcript off the machine, and, after queueing the turn, it saves the buyer's vault
+(section 14).
 
 Its time bounds follow the delivery the dispatcher passes. The plugin entry has no
 harness timeout. The repository copy runs under the harness's 60-second timeout,
@@ -413,7 +417,9 @@ prompt and after every compaction until a reply closes them.
    empty, gives no section.
 3. `.apparatus/standing.md` in the tenant repository, the standing instructions, the
    same way.
-4. The session's pending asks (open, running or waiting), oldest first, each under its number.
+4. When the vault holds a page with two versions kept (section 14), `text/settle.md`
+   with the pages named. It sits right after the apparatus's own texts, before the rules.
+5. The session's pending asks (open, running or waiting), oldest first, each under its number.
 
 **What a compaction injects, in order:** `text/compact-notice.md` (one sentence saying
 the session was compacted and that memory in the store is unaffected), then the rules
@@ -661,3 +667,82 @@ and `accepted-*.md` with the calibration asks and rules beside them, on the real
 `claude`, and fails unless every rejected draft gets `fix` and every accepted one
 `send`. It is run, and its date recorded in the pull request, whenever the prompt or a
 draft changes.
+
+## 14. Saving the vault: the commit and push at Stop
+
+The buyer never touches git (design D2, the tenant-repo requirements). After the Stop
+ship step has queued the turn's pointer, `launcher/events/stop-ship.sh` runs
+`lib/vaultsync.py sync` on the project root, under its own lock (`state/sync.lock`) and
+its own bound: 30 seconds in the plugin, 12 in a cloud session's repository copy, taken
+from the ship step's time. It is the same script on every surface, so a phone session and
+a desktop session save their work the same way.
+
+**What counts as the vault.** The folders `00-inbox`, `10-references`, `20-ideas`,
+`30-projects`, `40-areas`, `50-resources`, `60-archive`, `70-library`, `attachments` and
+`openspec`, the rules file the marker names, and `.apparatus/notices.json` and
+`.apparatus/standing.md`. The marker may carry a `folders` list that replaces the folder
+list, and `"sync": false` turns the step off for that repository.
+
+**When it does nothing**, in this order, and says so in the log (`vault sync: <status>`):
+
+| Status | Because |
+| --- | --- |
+| `off` | the marker says `"sync": false` |
+| `detached` | the head is not on a branch |
+| `busy` | a merge, rebase, cherry-pick or revert is in progress, or a page is unmerged |
+| `outside` | the working tree holds any change outside the vault: a stray script, a half-built site. Nothing is committed, fetched, merged or pushed, because that work is not the apparatus's to save |
+| `nothing` | no change, and the remote is not ahead |
+
+An unmarked repository never reaches this step: the gate (section 4) refuses it first.
+
+**What it does.** Everything changed under the vault is added by path and committed on
+the buyer's current branch with a plain message (`Save your notes: 3 changes in
+00-inbox, 30-projects`), in the buyer's own git identity (the maintainers' neutral one
+only where git has none), with no signing prompt and none of their git hooks. Then the
+remote branch is fetched, so the push is brought current first:
+
+- the remote is not ahead: a plain `git push origin HEAD:refs/heads/<branch>`; status
+  `pushed`;
+- the remote is ahead and nothing local was added: fast-forwarded (`merged`);
+- both sides changed: merged. A page changed on one side only merges quietly. Where both
+  changed the same lines, the page keeps BOTH versions between marker lines,
+  `<<<<<<< kept from this surface`, `=======`, `>>>>>>> kept from the other surface`,
+  and the merge is pushed (`kept-both:<n>`). A page one side deleted and the other
+  changed keeps the changed version. A binary file keeps the local file and the other
+  beside it as `<name>.other`.
+
+It never forces a push and never rewrites history. A push that loses a race is fetched,
+merged and tried again, three times at most. A remote that cannot be reached leaves the
+commit local (`offline`) and the next turn pushes it; a merge git refuses (unrelated
+histories) is aborted (`failed`) and the remote is left as it was.
+
+**Settling a page.** A page that holds two versions is recorded in
+`state/settle/<repo hash>.txt`, both by the surface that merged it and by the surface
+that later fast-forwards it in. Every prompt reads that file (`lib/vaultsync.py settle`),
+forgets a page whose marker lines are gone, and, while one remains, injects
+`text/settle.md` naming the pages, so the model shows the two versions and asks which to
+keep, in the buyer's next turn. The buyer never sees a git conflict.
+
+## 15. The duplicate-change guard: the pre-write step
+
+`launcher/events/pre-write.sh` runs before a Write, Edit, MultiEdit or NotebookEdit
+(PreToolUse, 5 seconds). When the tool is about to create the first file of a new
+OpenSpec change (a path under `openspec/changes/<name>/` whose folder does not exist
+yet, outside `archive`), `lib/dupchange.py check` looks for an open change or a
+document that already covers it and, if it finds one, prints a PreToolUse decision of
+`deny` whose reason names it and says to add to it instead:
+
+- by name: equal, one name's words all inside the other's (two words or more), or at
+  least 60 percent of the words shared; against every folder under `openspec/changes`
+  except `archive`, and every file name under `docs/`;
+- by keywords: the leading key words of the text being written (eight or more of them)
+  are 80 percent inside an open change's `proposal.md`, or 50 percent when the names
+  also share a word.
+
+It refuses once per new name per session (`state/dupguard/<session_id>`): a second
+attempt at the same name goes through, because the model has by then been told and the
+work is, on its word, different. It never refuses a write to a change that exists, a path
+outside the repository, or anything that is not a change. It fails open: an input in a
+shape it does not know, or a folder it cannot read, prints nothing and the write goes
+ahead. Only the tools in the hook's matcher are seen; a change scaffolded by a shell
+command is not.

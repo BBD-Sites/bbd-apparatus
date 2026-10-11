@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # stop-ship (Stop; asynchronous in the plugin, synchronous in a cloud session's
-# repository copy): the one step that sends a transcript off this machine
-# (docs/launcher-contract.md section 10). In order:
+# repository copy): the one step that sends a transcript off this machine, and that
+# saves the buyer's vault for them (docs/launcher-contract.md sections 10 and 14). In
+# order:
 #   1. queue a pointer to this session's transcript, so nothing below can lose it;
+#   1b. commit and push what changed under the vault's folders (lib/vaultsync.py), when
+#      the working tree holds only the vault;
 #   2. prove the redactor, once per checkout: a failed self-test sends nothing;
 #   3. for this session first, then the oldest queued ones (at most 5): render (which
 #      redacts, twice), then post-scan the rendered copy; a hit is quarantined and
@@ -56,6 +59,27 @@ ship() { python3 "$ship_py" "$@"; }
 
 # 1. The pointer first.
 current=$(ship queue-pointer "$queue" "$BBD_INPUT" "$BBD_WHERE" "$BBD_PROJECT_ROOT" "$BBD_TENANT")
+
+# 1b. Save the vault (lib/vaultsync.py, design D2 and the tenant-repo requirements):
+# commit what changed under the buyer's folders and push it on their current branch,
+# so the buyer never touches git and the other surface sees it on its next turn. After
+# the pointer, so nothing here can lose the turn; under its own bound, which comes off
+# the ship step's time (SECONDS runs on), and its own lock, so two Stops of one home do
+# not commit the same pages twice. It does nothing unless the working tree holds only
+# the vault, and it never forces a push.
+sync_bound=30
+[ "${BBD_DELIVERY:-}" = repo ] && sync_bound=12
+sync_lock=$state/sync.lock
+if bbd_lock "$sync_lock" 120; then
+  mkdir -p "$state/settle" 2>/dev/null
+  settle_file=$state/settle/$(python3 "$BBD_CHECKOUT/lib/vaultsync.py" state-name "$BBD_PROJECT_ROOT" 2>/dev/null)
+  sync_result=$(bbd_bounded "$sync_bound" python3 "$BBD_CHECKOUT/lib/vaultsync.py" sync "$BBD_PROJECT_ROOT" \
+    --deadline "$((sync_bound - 2))" --settle "$settle_file")
+  bbd_unlock "$sync_lock"
+  bbd_log "stop-ship: vault sync: ${sync_result:-no answer}"
+else
+  bbd_log "stop-ship: vault sync: another run holds the lock"
+fi
 
 # One ship step at a time per home: two draining one queue would send a session
 # twice. A holder older than five minutes, past every bound below, is dead.
