@@ -511,4 +511,44 @@ h_assert_eq "$status" "pushed+published" "a marker branch key names the default 
 h_assert_eq "$(git -C "$remote10" rev-parse refs/heads/trunk)" "$(head_of "$cloud10")" "the named branch has the note"
 h_assert_eq "$(git -C "$remote10" rev-parse refs/heads/main)" "$main10" "the repository's other branch is not touched"
 
+# 19. The other way: a note the desktop saves on the default branch mid-session reaches the
+# cloud session on its own branch at the session's next prompt (vault-only, never forced).
+cloud_pull() { CLAUDE_CODE_REMOTE=true python3 "$sync_py" pull "$1" --deadline "${3:-20}" --settle "${2:-$settle1}"; }
+vault11=$(h_fake_repo eleventh)
+h_mark "$vault11" tenant-a
+remote11=$tmp/eleventh.git
+cloud11=$tmp/cloud11
+git clone -q "$remote11" "$cloud11" 2>/dev/null
+git -C "$cloud11" config user.name "$H_GIT_NAME"; git -C "$cloud11" config user.email "$H_GIT_EMAIL"; git -C "$cloud11" config commit.gpgsign false
+git -C "$cloud11" checkout -q -b claude/def
+put "$vault11" "00-inbox/desk.md" "saved on the desktop mid-session"
+sync_in "$vault11" "$tmp/s11.txt" >/dev/null
+h_hook_json UserPromptSubmit cwd="$cloud11" session_id=sid-cloudpull prompt="Anything new from the desktop?" \
+  | h_launch prompt-cloudpull "$home" CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR="$cloud11" -- "$boot" prompt plugin
+if [ -f "$cloud11/00-inbox/desk.md" ]; then h_ok "the cloud session's next prompt sees the desktop's note"; else h_fail "the cloud session did not get the desktop's note"; fi
+h_assert_eq "$(git -C "$cloud11" symbolic-ref --short HEAD)" claude/def "the session stays on its own branch"
+h_assert_eq "$(git -C "$remote11" rev-parse -q --verify refs/heads/claude/def 2>/dev/null)" "" "the pull pushed nothing"
+
+# Outside a cloud session the same copy is not touched by the default branch.
+put "$vault11" "00-inbox/desk2.md" "second desktop note"
+sync_in "$vault11" "$tmp/s11.txt" >/dev/null
+h_assert_eq "$(pull_in "$cloud11" "$tmp/s11c.txt")" nothing "not a cloud session: the default branch is not brought in"
+if [ -f "$cloud11/00-inbox/desk2.md" ]; then h_fail "a desktop-side branch received the default branch"; else h_ok "a non-cloud branch is left alone"; fi
+
+# The session has its own vault commit and the default moved on: merged in, both kept, not forced.
+put "$cloud11" "00-inbox/phone.md" "phone note"
+git -C "$cloud11" add -A; h_git -C "$cloud11" commit -q -m "phone note"
+h_assert_eq "$(cloud_pull "$cloud11" "$tmp/s11c.txt")" "nothing+default" "a session with its own commits: the default branch is merged in"
+if [ -f "$cloud11/00-inbox/desk2.md" ] && [ -f "$cloud11/00-inbox/phone.md" ]; then h_ok "both the desktop's page and the session's are present"; else h_fail "the merge lost a page"; fi
+h_assert_empty "$(git -C "$cloud11" status --porcelain)" "the tree is clean after the merge"
+
+# Code committed on the session branch: nothing is merged in from the default branch.
+put "$cloud11" "src/app.js" "half built"
+git -C "$cloud11" add -A; h_git -C "$cloud11" commit -q -m "code on the session branch"
+put "$vault11" "00-inbox/desk3.md" "third desktop note"
+sync_in "$vault11" "$tmp/s11.txt" >/dev/null
+before=$(head_of "$cloud11")
+h_assert_eq "$(cloud_pull "$cloud11" "$tmp/s11c.txt")" "nothing+withheld" "code on the session branch: the default branch is withheld"
+h_assert_eq "$(head_of "$cloud11")" "$before" "withheld: the session branch did not move"
+
 h_done

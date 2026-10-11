@@ -774,9 +774,9 @@ session branch is pushed as above:
   `+published` or `+withheld`; the log says `vault sync: pushed+published`.
 
 Outside a cloud session nothing is ever pushed to another branch. The start-of-turn pull
-(below) fetches only the branch the desktop is on, so a desktop on the default branch
-receives the cloud session's note, and a desktop on a feature branch is left alone: the
-default branch is never merged into feature work.
+(below) fetches the branch the copy is on, so a desktop on the default branch receives the
+cloud session's note, and a desktop on a feature branch is left alone: the default branch
+is never merged into feature work.
 
 It never forces a push and never rewrites history. A push that loses a race is fetched,
 merged and tried again, three times at most. A remote that cannot be reached leaves the
@@ -814,6 +814,16 @@ forbids a network call there, and the first prompt of the session follows it at 
   was. Local, uncommitted pages of other names do not stop it.
 - A page that comes in holding two versions is recorded for the settle note, as after a
   save.
+- **In a cloud session, the other way** (`CLAUDE_CODE_REMOTE` is `true`, on a branch that
+  is not the default): after its own branch, the pull also fetches the default branch and
+  brings it into the session branch, so a note the desktop saved mid-session is on disk at
+  the session's next prompt. A session branch with nothing of its own is fast-forwarded; one
+  with its own vault commits has the default merged in, both versions kept on conflict.
+  This happens only when everything the session branch holds beyond the default lies under
+  the vault's folders (otherwise `+withheld`: nothing is merged, so published work and
+  session code never mix). Nothing is pushed and nothing forced; the Stop save sends the
+  merged branch. Statuses gain `+default` or `+withheld`. A desktop that is not on the
+  default branch is never given it.
 
 It fails open: the result goes to the log (`vault pull: <status>`), nothing is printed,
 and no failure, timeout or held lock changes the prompt it runs ahead of.

@@ -60,6 +60,14 @@ beyond the default branch lies under the vault's folders; otherwise nothing is m
 pushed there. The status gains "+published" or "+withheld". Outside a cloud session
 nothing is published to another branch.
 
+The other way, PULL in a cloud session (CLAUDE_CODE_REMOTE=true) on a branch that is not
+the default: after its own branch, the default branch is fetched and brought into the
+session branch (fast-forward when the session holds nothing of its own; otherwise merged,
+keep-both-versions on conflict), only when everything the session branch holds beyond the
+default lies under the vault's folders. Never pushed, never forced, bounded, fail open.
+The status gains "+default" or "+withheld". A desktop on any branch is not given the
+default branch unless it is on it.
+
 STATUS is one of: off, busy, detached, outside, nothing, committed, pushed, merged,
 kept-both:<n>, offline, failed.
 
@@ -514,11 +522,61 @@ def sync_branch(root: str, clock: Clock, state: str = "") -> str:
     return "failed"
 
 
+def pull_default(git: Git, branch: str, state: str) -> str:
+    """Cloud session only: bring the default branch into the session branch. Returns
+    "default" (brought in), "withheld", "nothing" or "" (could not, fail open)."""
+    default = default_branch(git)
+    if not default or default == branch:
+        return ""
+    remote_ref = "refs/remotes/origin/" + default
+    if git.run("fetch", "-q", "--no-tags", "origin", "+refs/heads/%s:%s" % (default, remote_ref)).returncode != 0:
+        return ""
+    remote = git.out("rev-parse", "-q", "--verify", remote_ref + "^{commit}")
+    head = git.out("rev-parse", "HEAD")
+    if not remote:
+        return ""
+    if remote == head or git.ok("merge-base", "--is-ancestor", remote, "HEAD"):
+        return "nothing"
+    if git.ok("merge-base", "--is-ancestor", "HEAD", remote):
+        if not git.ok("merge", "-q", "--ff-only", remote_ref):
+            return ""
+    else:
+        base = git.out("merge-base", "HEAD", remote)
+        if not base:
+            return ""
+        folders, files = allowed_paths(git.root)
+        if any(not is_allowed(p, folders, files) for p in changed_between(git, base, "HEAD")):
+            return "withheld"
+        ok, pages = merge_in(git, remote_ref, default)
+        if not ok:
+            return ""
+        remember(git, state, head, git.out("rev-parse", "HEAD"), pages)
+        return "default"
+    remember(git, state, head, git.out("rev-parse", "HEAD"), [])
+    return "default"
+
+
 def pull(root: str, seconds: float, state: str = "") -> str:
+    clock = Clock(seconds)
+    status = pull_branch(root, clock, state)
+    if status not in ("nothing", "pulled", "diverged"):
+        return status
+    if os.environ.get("CLAUDE_CODE_REMOTE") != "true":
+        return status
+    git = Git(root, clock)
+    branch = git.out("symbolic-ref", "-q", "--short", "HEAD")
+    if not branch or not git.ok("remote", "get-url", "origin"):
+        return status
+    result = pull_default(git, branch, state)
+    if result in ("default", "withheld"):
+        return status + "+" + result
+    return status
+
+
+def pull_branch(root: str, clock: Clock, state: str = "") -> str:
     """Fast-forward to the remote branch, and only that. See the PULL paragraph above."""
     if not os.path.isfile(os.path.join(root, ".apparatus", "vault.json")):
         return "unmarked"
-    clock = Clock(seconds)
     git = Git(root, clock)
     if marker(root).get("sync") is False:
         return "off"

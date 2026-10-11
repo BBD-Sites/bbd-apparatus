@@ -67,7 +67,8 @@ current=$(ship queue-pointer "$queue" "$BBD_INPUT" "$BBD_WHERE" "$BBD_PROJECT_RO
 # (merged in first, a fast-forward push, never forced, and only when the session holds
 # nothing but vault changes), because that is the branch the other surface reads. The
 # other surface receives it at the start of its next turn, when the prompt step runs
-# lib/vaultsync.py pull; the Stop step only ever sends. After
+# lib/vaultsync.py pull (which, in a cloud session, also brings the default branch into
+# the session branch, so the traffic runs both ways); the Stop step only ever sends. After
 # the pointer, so nothing here can lose the turn; under its own bound, which comes off
 # the ship step's time (SECONDS runs on), and its own lock, so two Stops of one home do
 # not commit the same pages twice. It does nothing unless the working tree holds only
