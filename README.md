@@ -86,7 +86,8 @@ else `~/.config/bbd-apparatus/denylist.txt`, else the `NAME_DENYLIST` Actions se
 CI, where an empty list fails the run. A pull request lands by a fast-forward push of
 its signed head (`docs/channels.md`), which creates no commit, so every commit carries
 the neutral identity as both author and committer; the audit accepts nothing else. The
-launcher's contract is `docs/launcher-contract.md`.
+launcher's contract is `docs/launcher-contract.md`. The buyer's four skills (`/bbd:intake`,
+`/bbd:plan`, `/bbd:spec-interview`, `/bbd:capture`) are described in `docs/skills.md`.
 What the redactor removes, and its two checks, are in `docs/redaction.md`.
 
 The keep-current notices compare a session against `data/models.json` (the model
