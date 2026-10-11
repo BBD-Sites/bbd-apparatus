@@ -25,6 +25,12 @@
 #                         failure): print the assembled prompt, so the model hands it
 #                         to a reader itself with the Agent tool.
 #
+#   intake, plan, spec-interview, capture
+#                         the buyer's skills (docs/skills.md): the text in text/skills/NAME.md,
+#                         printed whole. capture adds one block naming the repository's
+#                         size limit and where a bigger file stays. plan prints nothing on a
+#                         channel data/skill-gates.json does not open it on.
+#
 # Every other name is a no-op. Stdout here is the body the model follows; it passes
 # as it is.
 # shellcheck source=../lib/common.sh
@@ -162,8 +168,23 @@ EOF
   return 0
 }
 
+# buyer_skill NAME: the skill's text, from this checkout. Nothing when the text is not
+# there, or when the skill is gated closed on this channel.
+buyer_skill() {
+  local name=$1 file=$BBD_CHECKOUT/text/skills/$1.md
+  [ -s "$file" ] || return 0
+  python3 "$BBD_CHECKOUT/lib/skillinfo.py" gate "$BBD_CHECKOUT/data/skill-gates.json" "$name" "${BBD_CHANNEL:-stable}" 2>>"$BBD_LOG" || return 0
+  cat "$file"
+  if [ "$name" = capture ]; then
+    printf '\n'
+    python3 "$BBD_CHECKOUT/lib/skillinfo.py" place "$BBD_PROJECT_ROOT" 2>>"$BBD_LOG"
+  fi
+  return 0
+}
+
 name=${1:-}
 case "$name" in
+  intake|plan|spec-interview|capture) buyer_skill "$name" ;;
   notices-stop-*) notices_stop "${name#notices-stop-}" ;;
   read-draft) read_draft ;;
 esac
