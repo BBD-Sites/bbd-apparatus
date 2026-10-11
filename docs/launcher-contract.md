@@ -668,18 +668,20 @@ below: `lib/loopguard.py` keeps `state/loopguard/<session_id>.turn` keyed by `pr
 `stop_hook_active` is the first line of that guard; the file is the second, for a
 harness that does not send the field.
 
-**The one exception: a score chased.** When the first block carried only deterministic
-findings (the grade and/or the missing asks) and no reader finding, the writer may have
-chopped sentences into fragments to pass the grader. So on the second pass, and only
-then, a reader verdict of `fix` gets ONE more block, carrying the reader's findings alone.
-If the first block already carried the reader's findings (or a cloud hand-back), the
-second pass stays advisory. The guard records what the last block carried
-(`<turn key> <count> det|reader` in the `.turn` file; `loopguard.py tag` prints it) and
-holds the cap itself: no caller can obtain more than two blocks in a turn
-(`MAX_CAP`), a third pass can never block, and any error in the guard (a session id that
-is not a plain word, an unwritable directory, a damaged record) reads as "no tag", so
-it never creates a block. The receipt of such a pass records `blocked=1` and
-`second_block=1`.
+**The one exception: a score chased** (design D45). The grade alone may hold a reply once,
+and a score can be chased: the writer chops sentences into fragments to pass the grader.
+So when the first block quoted the hard sentences (whether or not the reader also found
+something in that pass), the second pass is read as before and, if the reader's verdict is
+`fix`, ONE more block is allowed, carrying the reader's findings alone. A first block that
+did not quote the hard sentences (the reader's findings, or the missing asks, or a cloud
+hand-back) leaves the second pass advisory. The guard records what the last block carried
+(`<turn key> <count> grade|other` in the `.turn` file; `loopguard.py tag` prints it) and
+holds the cap itself: no caller can obtain more than two blocks in a turn (`MAX_CAP`), a
+third pass can never block, and any error in the guard (a session id that is not a plain
+word, an unwritable directory, a damaged record) reads as "no tag", so it never creates a
+block. The receipt of such a pass records `blocked=1` and `second_block=1`; every receipt
+also records `grade_flag` and `asks_flag` (whether the first-pass block quoted hard
+sentences or listed missing asks).
 
 **The receipt**, `lib/receipt.py`, is written for every read and every attempt, never
 for a skip: session, prompt_id, status (`read`, `unparseable`, `empty`, `no-claude`,

@@ -12,9 +12,10 @@
 #      turn's one block is spent, so the pass is ADVISORY: the reader still runs and
 #      its receipt is written (advisory=1), but nothing can be held and no hand-back
 #      is made (design D28: the reader judges the reply; the grade and the ask check
-#      are only flags). One exception: when the first block carried no reader finding
-#      and this pass's reader says fix, ONE more block is allowed (a score may have been
-#      chased); lib/loopguard.py holds the cap of two blocks per turn.
+#      are only flags). One exception (design D45): when the first block quoted the
+#      hard sentences and this pass's reader says fix, ONE more block is allowed, the
+#      reader's findings alone (a score may have been chased); lib/loopguard.py holds
+#      the cap of two blocks per turn.
 #   3. Under 50 prose words there is nothing to read and nothing is held for asks.
 #      The rules file the marker names is read against when it exists; a repository
 #      with none is read against the reply contract alone.
@@ -154,15 +155,17 @@ case "$status" in
 esac
 blocked=0
 parts=""
-# One more block, in one case only: the first block carried deterministic findings and no
-# reader finding (the writer may have chased the score by chopping sentences), and the
-# reader's verdict on the second pass is fix. The guard holds the cap of two.
+# One more block, in one case only: the first block quoted the hard sentences (whether
+# or not the reader also found something), so the writer may have chased the score by
+# chopping sentences, and the reader's verdict on the second pass is fix. The block is
+# tagged "grade" when it carried the hard sentences, else "other". The guard holds the
+# cap of two (design D45).
 extra=0
 cap=1
-tag=det
-if [ "$verdict" = fix ] || [ -n "$handback" ]; then tag=reader; fi
+tag=other
+[ -n "$hard" ] && tag=grade
 if [ "$advisory" = 1 ] && [ "$verdict" = fix ] \
-    && [ "$(python3 "$BBD_CHECKOUT/lib/loopguard.py" tag "$guard" "$sid" "$turn" 2>>"$BBD_LOG")" = det ]; then
+    && [ "$(python3 "$BBD_CHECKOUT/lib/loopguard.py" tag "$guard" "$sid" "$turn" 2>>"$BBD_LOG")" = grade ]; then
   extra=1
   cap=2
 fi

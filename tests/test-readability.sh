@@ -166,8 +166,15 @@ if has "$r" 'CLAIMS: "every unauthenticated request was silently forwarded"'; th
 if has "$r" '"The authentication middleware was misconfigured'; then h_ok "the one block also quotes the hard sentence"; else h_fail "the hard sentence is missing from the block: $r"; fi
 h_assert_eq "$(reads)" 1 "both findings cost one reader call"
 h_assert_eq "$(h_run_out both | grep -c '"decision"')" 1 "exactly one block was printed"
-READER_OUT="$tmp/fix-claim.txt" stop both2 s7 p20 "$tmp/hard-both.md" stop_hook_active=true
-h_assert_empty "$(h_run_out both2)" "the second pass of that turn cannot block"
+# The first block quoted hard sentences, so a chased score is possible: the corrected
+# reply (fragments) read with a fix verdict earns one more block, the reader's alone.
+{ printf 'Redirect bad. Fixed it. Checked prod. Form works. Endpoint gone. Site same. Nothing needed from you. Ask if you want more. The page is fast. The mail sends.\n'; printf 'Every other page is as it was and you do not have to do anything more today. The old photos are gone. The text is short. The phone view is fine. The desktop view is fine. Nothing else moved.\n'; } >"$tmp/frag-both.md"
+READER_OUT="$tmp/fix-claim.txt" stop both2 s7 p20 "$tmp/frag-both.md" stop_hook_active=true
+h_assert_eq "$(decision both2)" block "reader findings plus grade in the first block, then a fix: one more block"
+if has "$(reason both2)" "harder to read"; then h_fail "the second block repeated the grade"; else h_ok "the second block is the reader's alone"; fi
+{ cat "$tmp/frag-both.md"; printf 'A last small edit.\n'; } >"$tmp/frag-both3.md"
+READER_OUT="$tmp/fix-claim.txt" stop both3 s7 p20 "$tmp/frag-both3.md" stop_hook_active=true
+h_assert_empty "$(h_run_out both3)" "the third pass of that turn cannot block"
 
 # 2. The reply that follows is the second pass: it is never held again, however hard it
 # is, but it is read in advisory mode and a receipt records it (the reader judges the
@@ -256,8 +263,8 @@ python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a1=$?
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a2=$?
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a3=$?
 h_assert_eq "$a1$a2$a3" "001" "the guard never allows a third block in a turn, even asked for nine"
-# A first block that carried the reader's findings leaves the second pass advisory:
-# that is the both/both2 case above (reader fix plus grade, then the second pass is silent).
+# A first block that carried the reader's findings but NOT the grade leaves the second
+# pass advisory: see the ask-ledger test (reader fix plus a missing ask, then silence).
 
 # 3. A harness that does not send stop_hook_active: the loop guard still caps it at one.
 stop capped s1 p1 "$tmp/hard.md"
