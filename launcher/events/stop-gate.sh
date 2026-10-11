@@ -2,36 +2,33 @@
 # stop-gate (Stop, synchronous): the read-draft step, the one place that may print a
 # block decision (docs/launcher-contract.md section 13). The reply the model is about
 # to leave on screen is read by an independent reader on the person's own plan
-# (reader/reader.py, one headless `claude -p`), and when the reader finds something,
-# the turn is held once with the findings as the reason, so the model sends a
-# corrected reply. In order:
+# (reader/reader.py, one headless `claude -p`), and when anything is found, the turn is
+# held once with ALL the findings as the reason, so the model sends one corrected reply.
+# In order:
 #   1. The draft is last_assistant_message. The reply is read for where each pending
 #      ask stands, by its number (lib/ledger.py account), and the ask ledger moves to
-#      match, on every pass. A reply of 50 prose words or more that leaves an ask out
-#      is held once, with the missing asks handed back (design D23).
+#      match, on every pass.
 #   2. stop_hook_active: this Stop is the second pass of the turn, after a block. The
-#      turn's one block is spent, so nothing below can hold the reply: the two
-#      deterministic holds (steps 1 and 5) are skipped, and the reader still runs, in
-#      ADVISORY mode (its verdict is recorded, never acted on, and no hand-back), so the
-#      corrected reply is read and has a receipt (design D28: the reader judges the
-#      reply; a grade or a missing ask is only a flag).
-#   3. Under 50 prose words there is nothing to read. The rules file the marker names
-#      is read against when it exists; a repository with none is read against the
-#      reply contract alone.
+#      turn's one block is spent, so the pass is ADVISORY: the reader still runs and
+#      its receipt is written (advisory=1), but nothing can be held and no hand-back
+#      is made (design D28: the reader judges the reply; the grade and the ask check
+#      are only flags).
+#   3. Under 50 prose words there is nothing to read and nothing is held for asks.
+#      The rules file the marker names is read against when it exists; a repository
+#      with none is read against the reply contract alone.
 #   4. A receipt for this exact draft (lib/receipt.py) means it was read already.
-#   5. The reading level (lib/readability.py, pure python): a reply above the fifth-grade
-#      ceiling is held once with the hard sentences quoted, before the reader is paid for
-#      (design D24).
-#   6. The reader runs under a bound (60 seconds; BBD_READER_BOUND overrides, 1 to 600)
-#      with the reply contract, the rules file, the session's open asks and the draft.
-#   7. A verdict of fix becomes one block, at most once per turn (lib/loopguard.py,
-#      keyed by the session and prompt_id, else the draft's hash). A verdict of send,
-#      and an answer out of shape, lets the reply through. When the reader itself
+#   5. The reader runs FIRST, under a bound (60 seconds; BBD_READER_BOUND overrides,
+#      1 to 600), with the reply contract, the rules file, the open asks and the draft:
+#      one call per draft, whatever else is found.
+#   6. Then the two deterministic checks: the reading level (lib/readability.py, pure
+#      python, design D24) and the asks the reply left out (design D23). ALL findings
+#      (the reader's, the quoted hard sentences, the missing asks) go into ONE block,
+#      at most once per turn (lib/loopguard.py, keyed by the session and prompt_id, else
+#      the draft's hash). Only the parts that exist are printed. When the reader itself
 #      could not run (no `claude`, a timeout, a non-zero exit): on a desktop home the
-#      reply goes through, logged; in a cloud session the same one block hands the
-#      model the assembled prompt to give to a reader through the Agent tool.
-#   8. A receipt is written for every read and every attempt, never for a skip; a second
-#      pass's carries advisory=1.
+#      reader adds nothing; in a cloud session its part is the assembled prompt to give
+#      to a reader through the Agent tool.
+#   7. A receipt is written for every read and every attempt, never for a skip.
 # Stdout here becomes the Stop decision, so nothing but that one object is printed.
 # shellcheck source=../lib/common.sh
 . "$BBD_CHECKOUT/launcher/lib/common.sh" || exit 0
@@ -94,19 +91,9 @@ if python3 "$BBD_CHECKOUT/lib/hookio.py" flag "$BBD_INPUT" stop_hook_active 2>>"
 fi
 turn=$pid
 [ -n "$turn" ] || turn=$(python3 "$BBD_CHECKOUT/lib/receipt.py" hash "$draft" 2>>"$BBD_LOG")
-if [ "$advisory" = 0 ] && [ -n "$missing" ] && [ "$words" -ge 50 ]; then
-  if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
-    {
-      printf 'Your reply does not say where these asks stand. Send it again with each one under its own number, marked done, running or waiting:\n\n'
-      printf '%s\n' "$missing" | cut -c1-240 | head -n 20
-    } | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
-    bbd_log "stop-gate: held once; $(printf '%s\n' "$missing" | wc -l | tr -d ' ') ask(s) left out of the reply"
-    exit 0
-  fi
-  bbd_log "stop-gate: asks left out, but a block already happened this turn; the reply goes through"
-fi
 
-# 3. Whether there is anything to read it against.
+# 3. Whether there is anything to read it against. A reply under fifty prose words is an
+# acknowledgement: it is not read and not held for asks.
 if [ "$words" -lt 50 ]; then
   bbd_log "stop-gate: $words prose words; nothing to read"
   exit 0
@@ -119,66 +106,58 @@ if [ -n "${BBD_RULES:-}" ] && [ -s "$BBD_PROJECT_ROOT/$BBD_RULES" ]; then
   rules=$BBD_PROJECT_ROOT/$BBD_RULES
 fi
 
-# 4. Read once.
+# 4. Read once. A draft with a receipt is not read again, and the grade is not
+# measured again either (it was measured when the draft was read); the ask check still is.
+read_already=0
 if python3 "$BBD_CHECKOUT/lib/receipt.py" exists "$receipts" "$draft" 2>>"$BBD_LOG"; then
-  bbd_log "stop-gate: this draft was read already; the reply goes through"
-  exit 0
+  read_already=1
+  bbd_log "stop-gate: this draft was read already"
 fi
 
-# 5. The reading level, measured before anything is paid for (design D24). The grader
-# ships here (lib/readability.py: pure python, no network); a reply above the ceiling
-# is held once with the sentences a reader would stumble on quoted, and the reply
-# that follows is the second pass and goes through. A deterministic hold, so the
-# reader is not run on a reply that is about to be rewritten. It is a flag, never a
-# target: the message says to cut the idea or say it plainly, not to chop it up.
-hard=""
-[ "$advisory" = 0 ] && hard=$(python3 "$BBD_CHECKOUT/lib/readability.py" check "$draft" 2>>"$BBD_LOG")
-if [ -n "$hard" ]; then
-  if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
-    printf '%s\n' "$hard" | awk -F'\t' '
-      NR == 1 {
-        printf "This reply is harder to read than the person can follow: it grades at %s, and the ceiling is %s. ", $1, $2
-        printf "These are the sentences a reader would stumble on. Say each one in plainer words, or cut the idea it carries. "
-        printf "Do not chop sentences into fragments, and do not add or drop a fact. Then send the reply again.\n\n"
-        next
-      }
-      { printf "- \"%s\" (grade %s)\n", $2, $1 }' | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
-    bbd_log "stop-gate: held once for reading level; $(( $(printf '%s\n' "$hard" | wc -l) - 1 )) sentence(s) quoted"
-    exit 0
-  fi
-  bbd_log "stop-gate: above the reading ceiling, but a block already happened this turn; the reply goes through"
-fi
-
+# 5. The reader runs FIRST (one call), then the two deterministic checks are worked out,
+# and every finding goes into the turn's ONE block. Running the reader after a
+# deterministic hold used to spend the block on the grade or the missing asks and send
+# the corrected reply on without its findings.
 stop_reason=$(field stop_reason)
+status=""; verdict=send; count=0; elapsed=0
+if [ "$read_already" = 0 ]; then
+  result=$(mktemp "$BBD_BASE/state/verdict.XXXXXX" 2>/dev/null) || exit 0
+  python3 "$BBD_CHECKOUT/reader/reader.py" read \
+    --draft "$draft" --contract "$BBD_CHECKOUT/text/reply-contract.md" \
+    --rules "$rules" --asks "$asks" --kind reply --bound "$BOUND" >"$result" 2>>"$BBD_LOG"
+  status=$(jget "$result" status)
+  verdict=$(jget "$result" verdict)
+  count=$(jget "$result" count)
+  elapsed=$(jget "$result" elapsed)
+  [ -n "$status" ] || status=failed
+  [ "$verdict" = fix ] || verdict=send
+fi
 
-# 6. The reader.
-result=$(mktemp "$BBD_BASE/state/verdict.XXXXXX" 2>/dev/null) || exit 0
-python3 "$BBD_CHECKOUT/reader/reader.py" read \
-  --draft "$draft" --contract "$BBD_CHECKOUT/text/reply-contract.md" \
-  --rules "$rules" --asks "$asks" --kind reply --bound "$BOUND" >"$result" 2>>"$BBD_LOG"
-status=$(jget "$result" status)
-verdict=$(jget "$result" verdict)
-count=$(jget "$result" count)
-elapsed=$(jget "$result" elapsed)
-[ -n "$status" ] || status=failed
-[ "$verdict" = fix ] || verdict=send
+# The grade (design D24) and the missing asks (design D23) are flags beside the reader's
+# findings, never a replacement for them. Neither is looked for on the second pass.
+hard=""
+asks_left=""
+if [ "$advisory" = 0 ]; then
+  [ "$read_already" = 0 ] && hard=$(python3 "$BBD_CHECKOUT/lib/readability.py" check "$draft" 2>>"$BBD_LOG")
+  asks_left=$missing
+fi
 
-# 7. One block per turn: the reader's findings, or, in a cloud session where the
-# reader could not run (no `claude` on the machine, a timeout, a failure), the
-# assembled prompt handed to the model to give to a reader of its own through the
-# Agent tool. On a desktop home that failure lets the reply through, logged.
+# 6. The block, in one piece: the reader's findings (or, in a cloud session where the
+# reader could not run, the assembled prompt to hand to a reader through the Agent
+# tool), then the quoted hard sentences, then the asks left out. Only the parts that
+# exist are printed; at most one block per turn (lib/loopguard.py).
 handback=""
 case "$status" in
   no-claude|timeout|failed) [ "${BBD_WHERE:-}" = cloud ] && [ "$advisory" = 0 ] && handback=1 ;;
 esac
 blocked=0
-if [ "$advisory" = 1 ]; then
-  bbd_log "stop-gate: advisory read, verdict $verdict; nothing is held"
-elif [ "$verdict" = fix ] || [ -n "$handback" ]; then
+parts=""
+if [ "$advisory" = 0 ] && { [ "$verdict" = fix ] || [ -n "$handback" ] || [ -n "$hard" ] || [ -n "$asks_left" ]; }; then
   if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
     blocked=1
-    if [ -n "$handback" ]; then
-      {
+    parts=$(mktemp "$BBD_BASE/state/parts.XXXXXX" 2>/dev/null) || exit 0
+    {
+      if [ -n "$handback" ]; then
         printf 'The reader that checks every reply before it is sent could not run on this machine (%s). ' "$status"
         printf 'Before you send, read it yourself through the Agent tool: start one subagent (a small, cheap model is enough), '
         printf 'paste the whole prompt below as its task with nothing added, act on each finding it returns, '
@@ -186,20 +165,46 @@ elif [ "$verdict" = fix ] || [ -n "$handback" ]; then
         python3 "$BBD_CHECKOUT/reader/reader.py" prompt \
           --draft "$draft" --contract "$BBD_CHECKOUT/text/reply-contract.md" \
           --rules "$rules" --asks "$asks" --kind reply 2>>"$BBD_LOG"
-      } | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
-      status=handed-back
-    else
-      jget "$result" reason | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
-    fi
+        printf '\n\n'
+        status=handed-back
+      elif [ "$verdict" = fix ]; then
+        jget "$result" reason
+        printf '\n\n'
+      fi
+      if [ -n "$hard" ]; then
+        printf '%s\n' "$hard" | awk -F'\t' '
+          NR == 1 {
+            printf "This reply is harder to read than the person can follow: it grades at %s, and the ceiling is %s. ", $1, $2
+            printf "These are the sentences a reader would stumble on. Say each one in plainer words, or cut the idea it carries. "
+            printf "Do not chop sentences into fragments, and do not add or drop a fact. Then send the reply again.\n\n"
+            next
+          }
+          { printf "- \"%s\" (grade %s)\n", $2, $1 }'
+        printf '\n'
+      fi
+      if [ -n "$asks_left" ]; then
+        printf 'Your reply does not say where these asks stand. Send it again with each one under its own number, marked done, running or waiting:\n\n'
+        printf '%s\n' "$asks_left" | cut -c1-240 | head -n 20
+      fi
+    } >"$parts"
+    python3 "$BBD_CHECKOUT/lib/hookio.py" block <"$parts" 2>>"$BBD_LOG"
+    bbd_log "stop-gate: held once; reader $verdict, reading level $([ -n "$hard" ] && echo flagged || echo ok), $([ -n "$asks_left" ] && printf '%s\n' "$asks_left" | wc -l | tr -d ' ' || echo 0) ask(s) left out"
   else
-    bbd_log "stop-gate: a block already happened this turn; the reply goes through"
+    bbd_log "stop-gate: findings, but a block already happened this turn; the reply goes through"
   fi
+elif [ "$advisory" = 1 ]; then
+  bbd_log "stop-gate: advisory read, verdict $verdict; nothing is held"
 fi
+rm -f "$parts" 2>/dev/null
 
-# 8. The receipt.
-python3 "$BBD_CHECKOUT/lib/receipt.py" write "$receipts" "$draft" \
-  "session=$sid" "prompt_id=$pid" "status=$status" "verdict=$verdict" "findings=${count:-0}" \
-  "blocked=$blocked" "advisory=$advisory" "elapsed=${elapsed:-0}" "stop_reason=$stop_reason" "words=$words" \
-  >/dev/null 2>>"$BBD_LOG" || bbd_log "stop-gate: the receipt could not be written"
-bbd_log "stop-gate: $status, verdict $verdict, ${count:-0} finding(s), blocked $blocked, ${elapsed:-0}s"
+# 7. The receipt, for every read and every attempt, never for a skip.
+if [ "$read_already" = 0 ]; then
+  python3 "$BBD_CHECKOUT/lib/receipt.py" write "$receipts" "$draft" \
+    "session=$sid" "prompt_id=$pid" "status=$status" "verdict=$verdict" "findings=${count:-0}" \
+    "blocked=$blocked" "advisory=$advisory" "grade_flag=$([ -n "$hard" ] && echo 1 || echo 0)" \
+    "asks_flag=$([ -n "$asks_left" ] && echo 1 || echo 0)" "elapsed=${elapsed:-0}" \
+    "stop_reason=$stop_reason" "words=$words" \
+    >/dev/null 2>>"$BBD_LOG" || bbd_log "stop-gate: the receipt could not be written"
+  bbd_log "stop-gate: $status, verdict $verdict, ${count:-0} finding(s), blocked $blocked, ${elapsed:-0}s"
+fi
 exit 0

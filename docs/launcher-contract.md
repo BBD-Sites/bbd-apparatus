@@ -562,40 +562,44 @@ the reason, so the model sends a corrected reply. Stop fires after the reply is 
 on screen, so "read before it is sent" can only mean this: one loop-guarded block,
 followed by the corrected reply. Nothing else here reaches the person.
 
-**The ask ledger check** comes first, on every pass, the second included. The asks the
-reader will be given are taken from the ledger, then the reply is read for where each
-pending ask stands (section 11) and the ledger moves to match. A reply of 50 prose words
-or more that names no state for an ask that is still pending is held once, with those
-asks handed back, one per line, under one sentence asking for the reply again with each
-ask under its own number, marked done, running or waiting. That block uses the turn's one
-block (`lib/loopguard.py`), so the corrected reply is the second pass and goes through
-(read in advisory mode, below), and a reply held for the ledger is not also sent to the
-reader on that first pass. A shorter reply is never
-held for this; it can still close the asks it names. A session with no ledger has
-nothing to check.
+**One pass, one block, every finding.** The reader runs first, then the two
+deterministic checks are worked out, and everything found goes into the turn's single
+block. Before this, a deterministic hold spent the turn's one block before the reader ran,
+so the corrected reply's reader findings (an unsourced claim, fragments) were never shown.
+Now the first pass reads the draft once (one call, never two), and the block carries, in
+this order and only for the parts that exist: the reader's findings (or, in a cloud session
+where the reader could not run, the assembled prompt to hand to a reader through the Agent
+tool), the hard sentences of the reading-level check, and the asks left out. A draft with
+only deterministic findings gets a block with only those; one with only the reader's gets
+only those.
 
-**The reading-level check** (design D24) comes after the ask check and the 50-word floor,
-and before the reader is paid for. `lib/readability.py` ships here: pure python 3, no
-network, nothing to install. It grades the reply's prose (fenced code, inline code, link
-addresses, identifiers and everything under a line that is only `---` are left out) with
-the Flesch-Kincaid grade level, and a reply is over the ceiling when the whole text grades
-above `CEILING_REPLY` (5, his to change; `CEILING_COPY` is 3, for copy a buyer's own
-customers read) and at least one sentence of eight words or more grades above it too.
-Such a reply is held once, with the hardest sentences (at most five, worst first) quoted
-under one sentence that says to cut the idea or say it in plainer words, never to chop it
-into fragments. It uses the turn's one block: the reply that follows is the second pass and
-goes through whatever it grades, and the reader does not run on a reply that is about to be
-rewritten (it runs on the corrected reply, in advisory mode). The score is a flag, never a target; what decides whether a reply is ready is the
-reader's pass. `readability.py grade FILE` prints a text's grade, for measuring a week of
-replies before the ceiling is changed.
+**The ask ledger check.** The asks the reader is given are taken from the ledger, then the
+reply is read for where each pending ask stands (section 11) and the ledger moves to
+match, on every pass. A reply of 50 prose words or more that names no state for an ask
+still pending adds those asks to the block, one per line, under one sentence asking for
+the reply again with each ask under its own number, marked done, running or waiting. A
+shorter reply is never held for this, and is not read; it can still close the asks it
+names. A session with no ledger has nothing to check.
+
+**The reading-level check** (design D24) is measured on the first pass of a draft that has
+not been read before, after the reader has run. `lib/readability.py` ships here: pure
+python 3, no network, nothing to install. It grades the reply's prose (fenced code,
+inline code, link addresses, identifiers and everything under a line that is only `---`
+are left out) with the Flesch-Kincaid grade level, and a reply is over the ceiling when
+the whole text grades above `CEILING_REPLY` (5, his to change; `CEILING_COPY` is 3, for
+copy a buyer's own customers read) and at least one sentence of eight words or more
+grades above it too. The hardest sentences (at most five, worst first) are quoted in the
+block under one sentence that says to cut the idea or say it in plainer words, never to
+chop it into fragments. The score is a flag, never a target; what decides whether a reply
+is ready is the reader's pass. `readability.py grade FILE` prints a text's grade, for
+measuring a week of replies before the ceiling is changed.
 
 **When it reads.** Two things first. On the second pass of a turn (`stop_hook_active` is
 true: this Stop follows a block) the read is **advisory**: the ask check and the
-reading-level check are skipped because the turn's one block is spent, the reader still
+reading-level check add nothing because the turn's one block is spent, the reader still
 runs under the same bound, its receipt is written with `advisory=1`, and its verdict is
 only recorded, never printed as a block; a cloud session's hand-back is not used either.
-Without this, a reply corrected after a deterministic hold went out unread and with no
-receipt, so the grade and the missing-ask check stood in for the reader (design D28: the
+Without this, a corrected reply went out unread and with no receipt (design D28: the
 reader judges the reply; the grade is only a flag). Then both of these must hold, on
 either pass; otherwise the step exits 0 with nothing printed and one line in the log
 saying which failed:
@@ -653,9 +657,10 @@ send the corrected reply. The receipt records `handed-back`. On a desktop home t
 same failure lets the reply through, logged, because there the next turn's reader will
 run and a block would only hold the person up.
 
-**The block** is `{"decision":"block","reason":"..."}`, the reason being the findings,
-one per line with their heading, under one sentence asking for the corrected reply, at
-most 4,000 characters. It is printed at most once per turn: `lib/loopguard.py` keeps
+**The block** is `{"decision":"block","reason":"..."}`, the reason being the reader's
+findings, one per line with their heading, under one sentence asking for the corrected
+reply (at most 4,000 characters for that part), followed by the reading-level and
+missing-ask parts when they exist. It is printed at most once per turn: `lib/loopguard.py` keeps
 `state/loopguard/<session_id>.turn` keyed by `prompt_id` (the harness's own turn
 identity), or by the draft's hash when the hook carries no `prompt_id`, and a second
 `fix` in the same turn is logged and let through. `stop_hook_active` is the first line

@@ -93,9 +93,53 @@ else h_fail "the held reason does not list the missing asks: $r"; fi
 if has "$r" "1. Make the home page"; then h_fail "the reason lists the ask the reply did name"; else h_ok "the ask the reply did name is not handed back"; fi
 if has "$r" "done, running or waiting"; then h_ok "the reason says what to mark each ask"; else h_fail "the reason does not say how to mark"; fi
 h_assert_eq "$(state_of "$sid" 1)" "done" "the ask the reply called done is closed"
-h_assert_eq "$(reads)" 0 "a reply held for the ledger is not also sent to the reader"
+h_assert_eq "$(reads)" 1 "a reply held for the ledger is read once, in the same pass"
+if has "$r" "A reader read this reply"; then h_fail "a send verdict added reader findings to the ledger block"; else h_ok "a send verdict adds nothing to the ledger block"; fi
+
+# 1b. The reader says fix AND two asks are left out: one block, both in it, one reader call.
+cat >"$tmp/fix.txt" <<'EOF2'
+VERDICT: fix
+RESTATE
+- none
+CHAIN
+- none
+THE PERSON'S WORDS
+- none
+CLAIMS
+- "the pages load faster now": say where this comes from, or drop it
+ANSWERED
+- none
+OWNER VOICE
+- none
+VALUE
+- 5 sentences or bullets in the body
+READING
+- none
+CONTRACT
+- none
+EOF2
+sidb=s-both
+prompt "$sidb" b1 "Make the home page load faster."
+prompt "$sidb" b1 "Is the contact form working?"
+h_calls_reset claude
+h_hook_json Stop cwd="$repo" session_id="$sidb" prompt_id=b1 stop_reason=end_turn \
+    last_assistant_message="$(filler 20)
+1. Home page: done." \
+  | h_launch both "$home" H_FAKE_CLAUDE_STDOUT_FILE="$tmp/fix.txt" -- "$boot" stop-gate plugin
+h_assert_eq "$(decision both)" block "a fix verdict and a missing ask: held"
+rb=$(reason both)
+if has "$rb" "the pages load faster now" && has "$rb" "2. Is the contact form working?"; then h_ok "the one block carries the reader's finding and the missing ask"; else h_fail "the combined block is missing a part: $rb"; fi
+h_assert_eq "$(reads)" 1 "both findings cost one reader call"
+h_assert_eq "$(h_run_out both | grep -c '"decision"')" 1 "exactly one block was printed"
+h_hook_json Stop cwd="$repo" session_id="$sidb" prompt_id=b1 stop_reason=end_turn stop_hook_active=true \
+    last_assistant_message="$(filler 21)
+1. Home page: done.
+2. The form: done." \
+  | h_launch both2 "$home" H_FAKE_CLAUDE_STDOUT_FILE="$tmp/fix.txt" -- "$boot" stop-gate plugin
+h_assert_empty "$(h_run_out both2)" "the second pass cannot block, whatever the reader says"
 
 # 2. The corrected reply is the second pass: it goes through, and the ledger follows it.
+h_calls_reset claude
 stop second "$sid" t1 "$(filler 2)
 1. Home page: done.
 2. The form: running, I am testing it.

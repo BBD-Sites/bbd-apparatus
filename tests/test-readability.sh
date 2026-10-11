@@ -117,7 +117,8 @@ reason() { printf '%s' "$(h_run_out "$1")" | h_json_field reason 2>/dev/null; }
 reads() { h_calls claude | grep -c -e '-p --model' || true; }
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
-# 1. A hard reply is held once, with the hard sentences quoted and no reader run.
+# 1. A hard reply is read first (one call), then held once with the hard sentences quoted;
+# the reader found nothing here, so the block carries only the grade.
 h_calls_reset claude
 stop hard s1 p1 "$tmp/hard.md"
 h_assert_hook_run hard "a hard reply"
@@ -127,16 +128,56 @@ if has "$r" '"The authentication middleware was misconfigured'; then h_ok "the h
 if has "$r" "ceiling is 5"; then h_ok "the reason names the ceiling"; else h_fail "the reason does not name the ceiling"; fi
 if has "$r" "Do not chop"; then h_ok "the reason says not to chop sentences into fragments"; else h_fail "the reason does not warn against chopping"; fi
 if has "$r" "The contact form now submits"; then h_fail "a plain sentence is quoted"; else h_ok "a plain sentence is not quoted"; fi
-h_assert_eq "$(reads)" 0 "the reader is not run on a reply that is about to be rewritten"
+h_assert_eq "$(reads)" 1 "the reader runs once, before the grade hold is decided"
+if has "$r" "A reader read this reply"; then h_fail "a send verdict added reader findings to the block"; else h_ok "a send verdict adds nothing to the grade block"; fi
+rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard.md" 2>/dev/null)
+case "$rcpt" in *'"blocked": 1'*) h_ok "the first pass wrote a receipt that records the block" ;; *) h_fail "the first-pass receipt is wrong: [$rcpt]" ;; esac
+
+# 1b. One block, both kinds of finding: the reader says fix (an unsourced claim) and the
+# reply is above the ceiling. The single block quotes the reader's finding AND the hard
+# sentence, and the reader was called once.
+cat >"$tmp/fix-claim.txt" <<'EOF2'
+VERDICT: fix
+RESTATE
+- none
+CHAIN
+- none
+THE PERSON'S WORDS
+- none
+CLAIMS
+- "every unauthenticated request was silently forwarded": say where this comes from, or drop it
+ANSWERED
+- none
+OWNER VOICE
+- none
+VALUE
+- 5 sentences or bullets in the body
+READING
+- none
+CONTRACT
+- none
+EOF2
+{ cat "$tmp/hard.md"; printf '\nThe redirect rules were rewritten as part of this pass.\n'; } >"$tmp/hard-both.md"
+h_calls_reset claude
+READER_OUT="$tmp/fix-claim.txt" stop both s7 p20 "$tmp/hard-both.md"
+h_assert_eq "$(decision both)" block "a fix verdict and a hard reply: held"
+r=$(reason both)
+if has "$r" 'CLAIMS: "every unauthenticated request was silently forwarded"'; then h_ok "the one block carries the reader's finding"; else h_fail "the reader's finding is missing from the block: $r"; fi
+if has "$r" '"The authentication middleware was misconfigured'; then h_ok "the one block also quotes the hard sentence"; else h_fail "the hard sentence is missing from the block: $r"; fi
+h_assert_eq "$(reads)" 1 "both findings cost one reader call"
+h_assert_eq "$(h_run_out both | grep -c '"decision"')" 1 "exactly one block was printed"
+READER_OUT="$tmp/fix-claim.txt" stop both2 s7 p20 "$tmp/hard-both.md" stop_hook_active=true
+h_assert_empty "$(h_run_out both2)" "the second pass of that turn cannot block"
 
 # 2. The reply that follows is the second pass: it is never held again, however hard it
 # is, but it is read in advisory mode and a receipt records it (the reader judges the
 # reply; the grade is only a flag).
 h_calls_reset claude
-stop again s1 p1 "$tmp/hard.md" stop_hook_active=true
+{ cat "$tmp/hard.md"; printf '\nThe corrected wording is shorter in places.\n'; } >"$tmp/hard-corrected.md"
+stop again s1 p1 "$tmp/hard-corrected.md" stop_hook_active=true
 h_assert_empty "$(h_run_out again)" "the second pass is never held again"
 h_assert_eq "$(reads)" 1 "the second pass is read by the reader"
-rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard.md" 2>/dev/null)
+rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard-corrected.md" 2>/dev/null)
 case "$rcpt" in *'"status": "read"'*) h_ok "the second pass wrote a receipt" ;; *) h_fail "no receipt for the second pass: [$rcpt]" ;; esac
 
 # 2b. A reader that says fix on that second pass cannot hold the reply: advisory only.
