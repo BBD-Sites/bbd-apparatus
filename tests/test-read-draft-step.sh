@@ -5,7 +5,8 @@
 # with the findings as the reason, and the same turn is never blocked again (the
 # second pass carries stop_hook_active; a pass without it is capped by the loop guard);
 # a new turn may block again. A draft already read, a draft under fifty prose words,
-# a second pass and a repository with no rules file are not read at all. A reader that
+# and a repository with no rules file are not read at all; a second pass is read in
+# advisory mode (receipt written, never blocks). A reader that
 # is absent, slow, failing or out of shape lets the reply through within the bound,
 # logged, and a receipt is written for every read and every attempt. The token never
 # reaches stdout, the log or the reader's input, and the reader's own session carries
@@ -188,19 +189,23 @@ h_assert_eq "$(receipt "$tmp/long-2.md" verdict)" fix "fix verdict: the receipt 
 h_assert_eq "$(receipt "$tmp/long-2.md" blocked)" 1 "fix verdict: the receipt records the block"
 h_assert_eq "$(receipt "$tmp/long-2.md" findings)" 3 "fix verdict: the receipt counts three findings"
 
-# 3. The second pass of that turn carries stop_hook_active: not read, not blocked.
+# 3. The second pass of that turn carries stop_hook_active: it is still read, in advisory
+# mode, so the corrected reply has a receipt; it can never block, whatever the reader says.
 stop second s2 p2 "$tmp/long-3.md" stop_hook_active=true -- H_FAKE_CLAUDE_STDOUT_FILE="$tmp/fix.txt"
 h_assert_hook_run second "second pass"
-h_assert_empty "$(h_run_out second)" "second pass: nothing on stdout"
-h_assert_eq "$(reads)" 1 "second pass: the reader did not run again"
-h_assert_empty "$(receipt "$tmp/long-3.md" status)" "second pass: no receipt, nothing was read"
+h_assert_empty "$(h_run_out second)" "second pass: nothing on stdout, a fix verdict cannot block"
+h_assert_eq "$(reads)" 2 "second pass: the reader ran on the corrected reply"
+h_assert_eq "$(receipt "$tmp/long-3.md" status)" read "second pass: the receipt records a read"
+h_assert_eq "$(receipt "$tmp/long-3.md" verdict)" fix "second pass: the receipt records what the reader said"
+h_assert_eq "$(receipt "$tmp/long-3.md" blocked)" 0 "second pass: the receipt records no block"
+h_assert_eq "$(receipt "$tmp/long-3.md" advisory)" 1 "second pass: the receipt says advisory"
 
 # 4. A pass of the same turn without stop_hook_active (a harness that does not send
 # it) is read, but the loop guard lets it through: one block per turn.
 stop capped s2 p2 "$tmp/long-4.md" -- H_FAKE_CLAUDE_STDOUT_FILE="$tmp/fix.txt"
 h_assert_hook_run capped "capped pass"
 h_assert_empty "$(h_run_out capped)" "capped pass: nothing on stdout although the reader said fix"
-h_assert_eq "$(reads)" 2 "capped pass: the reader ran"
+h_assert_eq "$(reads)" 3 "capped pass: the reader ran"
 h_assert_eq "$(receipt "$tmp/long-4.md" verdict)" fix "capped pass: the receipt records fix"
 h_assert_eq "$(receipt "$tmp/long-4.md" blocked)" 0 "capped pass: the receipt records no block"
 if grep -q "a block already happened this turn" "$logf"; then h_ok "capped pass: the log says why"; else h_fail "capped pass: the log does not say why"; fi
@@ -285,7 +290,8 @@ h_assert_eq "$(receipt "$tmp/long-10.md" status)" handed-back "cloud, no claude:
 h_assert_eq "$(receipt "$tmp/long-10.md" blocked)" 1 "cloud, no claude: the receipt records the block"
 stop remote2 s10 p11 "$tmp/long-11.md" stop_hook_active=true -- CLAUDE_CODE_REMOTE=true PATH="$nobin:$rest"
 h_assert_hook_run remote2 "cloud, second pass"
-h_assert_empty "$(h_run_out remote2)" "cloud, second pass: nothing on stdout"
+h_assert_empty "$(h_run_out remote2)" "cloud, second pass: nothing on stdout, no hand-back"
+h_assert_eq "$(receipt "$tmp/long-11.md" blocked)" 0 "cloud, second pass: the receipt records no block"
 stop remote3 s10 p11 "$tmp/long-12.md" -- CLAUDE_CODE_REMOTE=true PATH="$nobin:$rest"
 h_assert_hook_run remote3 "cloud, same turn without the flag"
 h_assert_empty "$(h_run_out remote3)" "cloud, same turn without the flag: the loop guard lets it through"

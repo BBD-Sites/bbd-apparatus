@@ -9,8 +9,12 @@
 #      ask stands, by its number (lib/ledger.py account), and the ask ledger moves to
 #      match, on every pass. A reply of 50 prose words or more that leaves an ask out
 #      is held once, with the missing asks handed back (design D23).
-#   2. stop_hook_active: this Stop is the second pass of the turn, after a block; the
-#      reply goes through whatever the reader would say.
+#   2. stop_hook_active: this Stop is the second pass of the turn, after a block. The
+#      turn's one block is spent, so nothing below can hold the reply: the two
+#      deterministic holds (steps 1 and 5) are skipped, and the reader still runs, in
+#      ADVISORY mode (its verdict is recorded, never acted on, and no hand-back), so the
+#      corrected reply is read and has a receipt (design D28: the reader judges the
+#      reply; a grade or a missing ask is only a flag).
 #   3. Under 50 prose words there is nothing to read. The rules file the marker names
 #      is read against when it exists; a repository with none is read against the
 #      reply contract alone.
@@ -26,7 +30,8 @@
 #      could not run (no `claude`, a timeout, a non-zero exit): on a desktop home the
 #      reply goes through, logged; in a cloud session the same one block hands the
 #      model the assembled prompt to give to a reader through the Agent tool.
-#   8. A receipt is written for every read and every attempt, never for a skip.
+#   8. A receipt is written for every read and every attempt, never for a skip; a second
+#      pass's carries advisory=1.
 # Stdout here becomes the Stop decision, so nothing but that one object is printed.
 # shellcheck source=../lib/common.sh
 . "$BBD_CHECKOUT/launcher/lib/common.sh" || exit 0
@@ -80,14 +85,16 @@ if [ -n "$sid" ]; then
   missing=$(python3 "$BBD_CHECKOUT/lib/ledger.py" account "$ledger_dir" "$sid" "$draft" 2>>"$BBD_LOG")
 fi
 
-# 2. The second pass of this turn, after a block: the reply goes through.
+# 2. The second pass of this turn, after a block: the reply goes through whatever is
+# found, but it is still read below (advisory), so a corrected reply is never sent unread.
+advisory=0
 if python3 "$BBD_CHECKOUT/lib/hookio.py" flag "$BBD_INPUT" stop_hook_active 2>>"$BBD_LOG"; then
-  bbd_log "stop-gate: the second pass of this turn; the reply goes through"
-  exit 0
+  advisory=1
+  bbd_log "stop-gate: the second pass of this turn; the reply is read in advisory mode and goes through"
 fi
 turn=$pid
 [ -n "$turn" ] || turn=$(python3 "$BBD_CHECKOUT/lib/receipt.py" hash "$draft" 2>>"$BBD_LOG")
-if [ -n "$missing" ] && [ "$words" -ge 50 ]; then
+if [ "$advisory" = 0 ] && [ -n "$missing" ] && [ "$words" -ge 50 ]; then
   if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
     {
       printf 'Your reply does not say where these asks stand. Send it again with each one under its own number, marked done, running or waiting:\n\n'
@@ -124,7 +131,8 @@ fi
 # that follows is the second pass and goes through. A deterministic hold, so the
 # reader is not run on a reply that is about to be rewritten. It is a flag, never a
 # target: the message says to cut the idea or say it plainly, not to chop it up.
-hard=$(python3 "$BBD_CHECKOUT/lib/readability.py" check "$draft" 2>>"$BBD_LOG")
+hard=""
+[ "$advisory" = 0 ] && hard=$(python3 "$BBD_CHECKOUT/lib/readability.py" check "$draft" 2>>"$BBD_LOG")
 if [ -n "$hard" ]; then
   if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
     printf '%s\n' "$hard" | awk -F'\t' '
@@ -161,10 +169,12 @@ elapsed=$(jget "$result" elapsed)
 # Agent tool. On a desktop home that failure lets the reply through, logged.
 handback=""
 case "$status" in
-  no-claude|timeout|failed) [ "${BBD_WHERE:-}" = cloud ] && handback=1 ;;
+  no-claude|timeout|failed) [ "${BBD_WHERE:-}" = cloud ] && [ "$advisory" = 0 ] && handback=1 ;;
 esac
 blocked=0
-if [ "$verdict" = fix ] || [ -n "$handback" ]; then
+if [ "$advisory" = 1 ]; then
+  bbd_log "stop-gate: advisory read, verdict $verdict; nothing is held"
+elif [ "$verdict" = fix ] || [ -n "$handback" ]; then
   if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
     blocked=1
     if [ -n "$handback" ]; then
@@ -189,7 +199,7 @@ fi
 # 8. The receipt.
 python3 "$BBD_CHECKOUT/lib/receipt.py" write "$receipts" "$draft" \
   "session=$sid" "prompt_id=$pid" "status=$status" "verdict=$verdict" "findings=${count:-0}" \
-  "blocked=$blocked" "elapsed=${elapsed:-0}" "stop_reason=$stop_reason" "words=$words" \
+  "blocked=$blocked" "advisory=$advisory" "elapsed=${elapsed:-0}" "stop_reason=$stop_reason" "words=$words" \
   >/dev/null 2>>"$BBD_LOG" || bbd_log "stop-gate: the receipt could not be written"
 bbd_log "stop-gate: $status, verdict $verdict, ${count:-0} finding(s), blocked $blocked, ${elapsed:-0}s"
 exit 0

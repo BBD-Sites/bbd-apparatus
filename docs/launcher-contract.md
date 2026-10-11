@@ -563,8 +563,9 @@ pending ask stands (section 11) and the ledger moves to match. A reply of 50 pro
 or more that names no state for an ask that is still pending is held once, with those
 asks handed back, one per line, under one sentence asking for the reply again with each
 ask under its own number, marked done, running or waiting. That block uses the turn's one
-block (`lib/loopguard.py`), so the corrected reply is the second pass and goes through,
-and a reply held for the ledger is not also sent to the reader. A shorter reply is never
+block (`lib/loopguard.py`), so the corrected reply is the second pass and goes through
+(read in advisory mode, below), and a reply held for the ledger is not also sent to the
+reader on that first pass. A shorter reply is never
 held for this; it can still close the asks it names. A session with no ledger has
 nothing to check.
 
@@ -579,18 +580,24 @@ Such a reply is held once, with the hardest sentences (at most five, worst first
 under one sentence that says to cut the idea or say it in plainer words, never to chop it
 into fragments. It uses the turn's one block: the reply that follows is the second pass and
 goes through whatever it grades, and the reader does not run on a reply that is about to be
-rewritten. The score is a flag, never a target; what decides whether a reply is ready is the
+rewritten (it runs on the corrected reply, in advisory mode). The score is a flag, never a target; what decides whether a reply is ready is the
 reader's pass. `readability.py grade FILE` prints a text's grade, for measuring a week of
 replies before the ceiling is changed.
 
-**When it reads.** All of these must hold, in this order; otherwise the step exits 0
-with nothing printed and one line in the log saying which failed:
+**When it reads.** Two things first. On the second pass of a turn (`stop_hook_active` is
+true: this Stop follows a block) the read is **advisory**: the ask check and the
+reading-level check are skipped because the turn's one block is spent, the reader still
+runs under the same bound, its receipt is written with `advisory=1`, and its verdict is
+only recorded, never printed as a block; a cloud session's hand-back is not used either.
+Without this, a reply corrected after a deterministic hold went out unread and with no
+receipt, so the grade and the missing-ask check stood in for the reader (design D28: the
+reader judges the reply; the grade is only a flag). Then both of these must hold, on
+either pass; otherwise the step exits 0 with nothing printed and one line in the log
+saying which failed:
 
-1. `stop_hook_active` is not true. When it is, this Stop is the second pass of the turn,
-   after a block, and the reply goes through whatever the reader would say.
-2. The draft has at least 50 prose words (fenced code left out). Shorter is an
+1. The draft has at least 50 prose words (fenced code left out). Shorter is an
    acknowledgement, not a draft anyone needs read.
-3. No receipt exists for this exact draft (`state/reader/<hash>.json`, the hash of the
+2. No receipt exists for this exact draft (`state/reader/<hash>.json`, the hash of the
    text with whitespace runs folded). A draft is read once.
 
 The repository's rules file, the one the vault marker names, is read against when it
@@ -651,7 +658,7 @@ of that guard; the file is the second, for a harness that does not send the fiel
 
 **The receipt**, `lib/receipt.py`, is written for every read and every attempt, never
 for a skip: session, prompt_id, status (`read`, `unparseable`, `empty`, `no-claude`,
-`timeout`, `failed`, `handed-back`), verdict, the number of findings, whether the turn was blocked,
+`timeout`, `failed`, `handed-back`), verdict, the number of findings, whether the turn was blocked, whether the read was advisory (the second pass of a turn),
 the seconds the reader took, the hook's `stop_reason` and the word count. Never the
 draft's text. Receipts and guard files older than seven days are removed in passing.
 

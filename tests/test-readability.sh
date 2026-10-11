@@ -110,7 +110,7 @@ stop() { # NAME SESSION PROMPT-ID DRAFT-FILE [hook key=value ...]
   shift 4
   h_hook_json Stop cwd="$repo" session_id="$sid" prompt_id="$pid" stop_reason=end_turn \
       last_assistant_message="$(cat "$file")" "$@" \
-    | h_launch "$name" "$home" H_FAKE_CLAUDE_STDOUT_FILE="$tmp/send.txt" -- "$boot" stop-gate plugin
+    | h_launch "$name" "$home" H_FAKE_CLAUDE_STDOUT_FILE="${READER_OUT:-$tmp/send.txt}" -- "$boot" stop-gate plugin
 }
 decision() { printf '%s' "$(h_run_out "$1")" | h_json_field decision 2>/dev/null; }
 reason() { printf '%s' "$(h_run_out "$1")" | h_json_field reason 2>/dev/null; }
@@ -129,11 +129,45 @@ if has "$r" "Do not chop"; then h_ok "the reason says not to chop sentences into
 if has "$r" "The contact form now submits"; then h_fail "a plain sentence is quoted"; else h_ok "a plain sentence is not quoted"; fi
 h_assert_eq "$(reads)" 0 "the reader is not run on a reply that is about to be rewritten"
 
-# 2. The reply that follows is the second pass: it goes through, however hard it is.
+# 2. The reply that follows is the second pass: it is never held again, however hard it
+# is, but it is read in advisory mode and a receipt records it (the reader judges the
+# reply; the grade is only a flag).
 h_calls_reset claude
 stop again s1 p1 "$tmp/hard.md" stop_hook_active=true
 h_assert_empty "$(h_run_out again)" "the second pass is never held again"
-h_assert_eq "$(reads)" 0 "the second pass is not read"
+h_assert_eq "$(reads)" 1 "the second pass is read by the reader"
+rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard.md" 2>/dev/null)
+case "$rcpt" in *'"status": "read"'*) h_ok "the second pass wrote a receipt" ;; *) h_fail "no receipt for the second pass: [$rcpt]" ;; esac
+
+# 2b. A reader that says fix on that second pass cannot hold the reply: advisory only.
+cat >"$tmp/fix.txt" <<'EOF2'
+VERDICT: fix
+RESTATE
+- "I made it simple": simple for whom
+CHAIN
+- none
+THE PERSON'S WORDS
+- none
+CLAIMS
+- none
+ANSWERED
+- none
+OWNER VOICE
+- none
+VALUE
+- 5 sentences or bullets in the body
+READING
+- none
+CONTRACT
+- none
+EOF2
+{ cat "$tmp/hard.md"; printf '\nThe release candidate was subsequently reconfigured by the infrastructure team.\n'; } >"$tmp/hard3.md"
+h_calls_reset claude
+READER_OUT="$tmp/fix.txt" stop advisory s5 p9 "$tmp/hard3.md" stop_hook_active=true
+h_assert_empty "$(h_run_out advisory)" "a fix verdict on the second pass does not hold the reply"
+h_assert_eq "$(reads)" 1 "the second pass after a reading-level hold is read"
+rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard3.md" 2>/dev/null)
+case "$rcpt" in *'"verdict": "fix"'*'"blocked": 0'*|*'"blocked": 0'*'"verdict": "fix"'*) h_ok "the receipt records the fix verdict and no block" ;; *) h_fail "the advisory receipt is wrong: [$rcpt]" ;; esac
 
 # 3. A harness that does not send stop_hook_active: the loop guard still caps it at one.
 stop capped s1 p1 "$tmp/hard.md"

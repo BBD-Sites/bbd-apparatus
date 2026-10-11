@@ -106,6 +106,7 @@ h_assert_hook_run second "the second pass"
 h_assert_empty "$(h_run_out second)" "the second pass is not held"
 h_assert_eq "$(state_of "$sid" 2)" running "the second pass moves item 2 to running"
 h_assert_eq "$(state_of "$sid" 3)" waiting "the second pass moves item 3 to waiting"
+h_assert_eq "$(reads)" 1 "the corrected reply is still read, in advisory mode"
 
 # 3. Running and waiting items come back on the next prompt, with their state, and after
 # a compaction; the closed one does not.
