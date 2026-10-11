@@ -721,7 +721,8 @@ receives at the start of its next turn (the last subsection of this section).
 `30-projects`, `40-areas`, `50-resources`, `60-archive`, `70-library`, `attachments` and
 `openspec`, the rules file the marker names, and `.apparatus/notices.json` and
 `.apparatus/standing.md`. The marker may carry a `folders` list that replaces the folder
-list, and `"sync": false` turns the step off for that repository.
+list, `"sync": false` turns the step off for that repository, and an optional `"branch"`
+names the default branch a cloud session publishes to (below).
 
 **When it does nothing**, in this order, and says so in the log (`vault sync: <status>`):
 
@@ -750,6 +751,30 @@ remote branch is fetched, so the push is brought current first:
   and the merge is pushed (`kept-both:<n>`). A page one side deleted and the other
   changed keeps the changed version. A binary file keeps the local file and the other
   beside it as `<name>.other`.
+
+**The default branch (cloud sessions).** A cloud session runs on its own branch
+(`claude/<id>`), and the other surface reads the repository's default branch, so a
+session branch alone would never reach it. When `CLAUDE_CODE_REMOTE` is `true` and the
+current branch is not the default, a save also publishes to the default branch, after the
+session branch is pushed as above:
+
+- the default branch is the marker's optional `branch` key; else
+  `git symbolic-ref refs/remotes/origin/HEAD`; else `git remote show origin`; else a
+  remote `main` or `master`. If none can be told, nothing is published;
+- it is fetched and merged in under the same keep-both-versions rules, then HEAD is
+  pushed to it as a plain push, which the remote refuses unless it is a fast-forward:
+  never forced, tried three times at most, inside the same bound, failing open;
+- only vault changes are ever published this way: if the session branch holds anything
+  beyond the default branch outside the vault's folders (a committed script, a site), the
+  default branch is not fetched into the session, merged or pushed (status
+  `+withheld`);
+- the session branch is pushed again if the merge moved it. The status gains
+  `+published` or `+withheld`; the log says `vault sync: pushed+published`.
+
+Outside a cloud session nothing is ever pushed to another branch. The start-of-turn pull
+(below) fetches only the branch the desktop is on, so a desktop on the default branch
+receives the cloud session's note, and a desktop on a feature branch is left alone: the
+default branch is never merged into feature work.
 
 It never forces a push and never rewrites history. A push that loses a race is fetched,
 merged and tried again, three times at most. A remote that cannot be reached leaves the

@@ -49,6 +49,17 @@ branch with commits on both sides is left to the Stop step (`diverged`). Also `n
 (already current, or the branch is not on the remote) and `offline`. A page that comes in
 holding two versions is listed for the next prompt to settle, as after a sync.
 
+DEFAULT BRANCH. A cloud session works on its own branch (claude/<id>), and the other
+surface reads the repository's default branch, so a save made with CLAUDE_CODE_REMOTE=true
+on any other branch ALSO publishes to the default branch (the marker's optional "branch"
+key names it; else `git symbolic-ref refs/remotes/origin/HEAD`, else `git remote show
+origin`, else a remote `main` or `master`): fetch it, merge it in under the same
+keep-both-versions rules, and push HEAD to it as a plain push, which the remote refuses
+unless it is a fast-forward. It is done only when everything the session branch holds
+beyond the default branch lies under the vault's folders; otherwise nothing is merged or
+pushed there. The status gains "+published" or "+withheld". Outside a cloud session
+nothing is published to another branch.
+
 STATUS is one of: off, busy, detached, outside, nothing, committed, pushed, merged,
 kept-both:<n>, offline, failed.
 
@@ -359,8 +370,85 @@ def push(git: Git, branch: str) -> bool:
     return git.run("push", "-q", "origin", "HEAD:refs/heads/" + branch).returncode == 0
 
 
+BRANCH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,100}")
+
+
+def default_branch(git: Git) -> str:
+    """The repository's default branch, or "" when it cannot be told."""
+    named = marker(git.root).get("branch")
+    if isinstance(named, str) and BRANCH_NAME.fullmatch(named) and ".." not in named:
+        return named
+    ref = git.out("symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
+    if ref.startswith("origin/") and BRANCH_NAME.fullmatch(ref[7:]):
+        return ref[7:]
+    m = re.search(r"HEAD branch:\s*(\S+)", git.out("remote", "show", "origin"))
+    if m and m.group(1) != "(unknown)" and BRANCH_NAME.fullmatch(m.group(1)):
+        return m.group(1)
+    for candidate in ("main", "master"):
+        if git.run("ls-remote", "--exit-code", "--heads", "origin", candidate).returncode == 0:
+            return candidate
+    return ""
+
+
+def publish_default(git: Git, branch: str, state: str) -> str:
+    """Publish the session branch's vault commits to the default branch. Returns
+    "published", "withheld", "nothing" or "" (could not, fail open)."""
+    clock = git.clock
+    default = default_branch(git)
+    if not default or default == branch:
+        return ""
+    remote_ref = "refs/remotes/origin/" + default
+    folders, files = allowed_paths(git.root)
+    for _try in range(PUSH_TRIES):
+        if clock.spent():
+            return ""
+        if git.run("fetch", "-q", "--no-tags", "origin", "+refs/heads/%s:%s" % (default, remote_ref)).returncode != 0:
+            return ""
+        remote = git.out("rev-parse", "-q", "--verify", remote_ref + "^{commit}")
+        head = git.out("rev-parse", "HEAD")
+        if not remote:
+            return ""
+        if remote == head or git.ok("merge-base", "--is-ancestor", "HEAD", remote):
+            return "nothing"
+        if git.ok("merge-base", "--is-ancestor", remote, "HEAD"):
+            base = remote
+        else:
+            base = git.out("merge-base", "HEAD", remote)
+            if not base:
+                return ""
+        if any(not is_allowed(p, folders, files) for p in changed_between(git, base, "HEAD")):
+            return "withheld"
+        if base != remote:
+            ok, pages = merge_in(git, remote_ref, default)
+            if not ok:
+                return ""
+            remember(git, state, head, git.out("rev-parse", "HEAD"), pages)
+        if push(git, default):
+            return "published"
+    return ""
+
+
 def sync(root: str, seconds: float, state: str = "") -> str:
     clock = Clock(seconds)
+    status = sync_branch(root, clock, state)
+    if status not in ("pushed", "nothing", "merged") and not status.startswith("kept-both"):
+        return status
+    if os.environ.get("CLAUDE_CODE_REMOTE") != "true":
+        return status
+    git = Git(root, clock)
+    branch = git.out("symbolic-ref", "-q", "--short", "HEAD")
+    if not branch or not git.ok("remote", "get-url", "origin"):
+        return status
+    before = git.out("rev-parse", "HEAD")
+    result = publish_default(git, branch, state)
+    if git.out("rev-parse", "HEAD") != before:
+        push(git, branch)  # the merge moved the session branch; send that too
+    if result in ("published", "withheld"):
+        return status + "+" + result
+    return status
+
+
+def sync_branch(root: str, clock: Clock, state: str = "") -> str:
     git = Git(root, clock)
     doc = marker(root)
     if doc.get("sync") is False:

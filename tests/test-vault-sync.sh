@@ -432,4 +432,83 @@ h_assert_hook_run prompt-hang "a prompt while the remote hangs"
 if [ "$took" -le 9 ]; then h_ok "a hung remote does not hold the prompt (${took}s)"; else h_fail "a hung remote held the prompt ${took}s"; fi
 if has "$(h_run_out prompt-hang)" additionalContext; then h_ok "the prompt still hands the model its context"; else h_fail "a hung remote cost the prompt its context"; fi
 
+# 18. A cloud session works on its own branch (claude/<id>), and the desktop reads the
+# default branch. The cloud save therefore also publishes the vault commits to the default
+# branch (merged in first, a fast-forward push, never forced); the desktop on that branch
+# sees the note at its next prompt; a desktop on a feature branch is left alone.
+cloud_sync() { CLAUDE_CODE_REMOTE=true python3 "$sync_py" sync "$1" --deadline "${3:-20}" --settle "${2:-$settle1}"; }
+vault9=$(h_fake_repo ninth)
+h_mark "$vault9" tenant-a
+remote9=$tmp/ninth.git
+cloud9=$tmp/cloud9
+git clone -q "$remote9" "$cloud9" 2>/dev/null
+for c in "$cloud9"; do
+  git -C "$c" config user.name "$H_GIT_NAME"; git -C "$c" config user.email "$H_GIT_EMAIL"; git -C "$c" config commit.gpgsign false
+done
+git -C "$cloud9" checkout -q -b claude/abc
+feat9=$tmp/feat9
+git clone -q "$remote9" "$feat9" 2>/dev/null
+git -C "$feat9" config user.name "$H_GIT_NAME"; git -C "$feat9" config user.email "$H_GIT_EMAIL"; git -C "$feat9" config commit.gpgsign false
+git -C "$feat9" checkout -q -b feature/work
+put "$cloud9" "00-inbox/from-phone.md" "a note from the phone"
+status=$(cloud_sync "$cloud9" "$tmp/s9c.txt")
+h_assert_eq "$status" "pushed+published" "a cloud copy on its own branch: pushed, and published to the default branch"
+h_assert_eq "$(git -C "$remote9" rev-parse refs/heads/claude/abc)" "$(head_of "$cloud9")" "the session branch is still pushed"
+h_assert_eq "$(git -C "$remote9" rev-parse refs/heads/main)" "$(head_of "$cloud9")" "the default branch has the note"
+h_hook_json UserPromptSubmit cwd="$vault9" session_id=sid-phone prompt="What did I add?" \
+  | h_launch prompt-phone "$home" CLAUDE_PROJECT_DIR="$vault9" -- "$boot" prompt plugin
+if [ -f "$vault9/00-inbox/from-phone.md" ]; then h_ok "the desktop on the default branch sees the phone's note on its next prompt"; else h_fail "the desktop did not get the phone's note"; fi
+h_assert_eq "$(pull_in "$feat9" "$tmp/s9f.txt")" nothing "a desktop on a feature branch: the pull leaves it alone"
+if [ -f "$feat9/00-inbox/from-phone.md" ]; then h_fail "the default branch was merged into feature work"; else h_ok "a feature branch is untouched"; fi
+h_assert_eq "$(git -C "$feat9" rev-parse HEAD)" "$(git -C "$feat9" rev-parse origin/main)" "feature branch head unchanged by the pull"
+
+# The default branch moved on (diverged from the cloud copy): it is merged in, not forced.
+old_main=$(git -C "$remote9" rev-parse refs/heads/main)
+surface9=$tmp/surface9
+git clone -q "$remote9" "$surface9" 2>/dev/null
+git -C "$surface9" config user.name "$H_GIT_NAME"; git -C "$surface9" config user.email "$H_GIT_EMAIL"; git -C "$surface9" config commit.gpgsign false
+put "$surface9" "10-references/desktop-note.md" "from the desktop"
+git -C "$surface9" add -A; h_git -C "$surface9" commit -q -m "desktop note"; git -C "$surface9" push -q origin HEAD:main
+put "$cloud9" "00-inbox/second-phone.md" "another phone note"
+status=$(cloud_sync "$cloud9" "$tmp/s9c.txt")
+case "$status" in *+published) h_ok "a diverged default branch: merged and published ($status)" ;; *) h_fail "a diverged default branch was not published: $status" ;; esac
+new_main=$(git -C "$remote9" rev-parse refs/heads/main)
+if git -C "$remote9" merge-base --is-ancestor "$old_main" "$new_main" && git -C "$remote9" cat-file -e "$new_main:10-references/desktop-note.md" && git -C "$remote9" cat-file -e "$new_main:00-inbox/second-phone.md"; then h_ok "the default branch kept the desktop's page and gained the phone's (not forced)"; else h_fail "the default branch lost something or was rewritten"; fi
+
+# Only vault changes are ever published this way: a commit outside the vault on the session
+# branch means the default branch is not touched.
+put "$cloud9" "src/app.js" "half built"
+git -C "$cloud9" add -A; h_git -C "$cloud9" commit -q -m "code on the session branch"
+put "$cloud9" "00-inbox/third-phone.md" "a third note"
+before_main=$(git -C "$remote9" rev-parse refs/heads/main)
+status=$(cloud_sync "$cloud9" "$tmp/s9c.txt")
+case "$status" in *+withheld) h_ok "code on the session branch: not published ($status)" ;; *) h_fail "code on the session branch was not withheld: $status" ;; esac
+h_assert_eq "$(git -C "$remote9" rev-parse refs/heads/main)" "$before_main" "the default branch is untouched when the session holds non-vault commits"
+h_assert_eq "$(git -C "$remote9" rev-parse refs/heads/claude/abc)" "$(head_of "$cloud9")" "the session branch is still pushed"
+
+# A desktop sync on its own non-default branch never publishes to the default branch.
+put "$feat9" "00-inbox/feature-note.md" "feature branch note"
+h_assert_eq "$(sync_in "$feat9" "$tmp/s9f.txt")" pushed "outside the cloud, a feature branch only pushes itself"
+h_assert_eq "$(git -C "$remote9" rev-parse refs/heads/main)" "$before_main" "and the default branch is untouched"
+
+# The marker names the default branch when the repository does not say.
+vault10=$(h_fake_repo tenth)
+remote10=$tmp/tenth.git
+python3 - "$vault10/.apparatus" <<'PY'
+import json, os, sys
+os.makedirs(sys.argv[1], exist_ok=True)
+json.dump({"schema": 1, "tenant": "tenant-a", "channel": "stable", "rules": "RULES.md", "branch": "trunk"}, open(os.path.join(sys.argv[1], "vault.json"), "w"))
+PY
+git -C "$vault10" add -A; h_git -C "$vault10" commit -q -m "marker with branch"; git -C "$vault10" push -q origin HEAD:main; git -C "$vault10" push -q origin HEAD:refs/heads/trunk
+cloud10=$tmp/cloud10
+git clone -q "$remote10" "$cloud10" 2>/dev/null
+git -C "$cloud10" config user.name "$H_GIT_NAME"; git -C "$cloud10" config user.email "$H_GIT_EMAIL"; git -C "$cloud10" config commit.gpgsign false
+git -C "$cloud10" checkout -q -b claude/xyz
+main10=$(git -C "$remote10" rev-parse refs/heads/main)
+put "$cloud10" "00-inbox/n.md" "note"
+status=$(cloud_sync "$cloud10" "$tmp/s10.txt")
+h_assert_eq "$status" "pushed+published" "a marker branch key names the default branch"
+h_assert_eq "$(git -C "$remote10" rev-parse refs/heads/trunk)" "$(head_of "$cloud10")" "the named branch has the note"
+h_assert_eq "$(git -C "$remote10" rev-parse refs/heads/main)" "$main10" "the repository's other branch is not touched"
+
 h_done
