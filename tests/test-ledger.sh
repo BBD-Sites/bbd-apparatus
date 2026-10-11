@@ -122,4 +122,67 @@ n=$(ledger append "$dir" "$(hook 'after damage')")
 h_assert_eq "$n" 8 "the next number follows the highest present"
 h_assert_eq "$(ledger open "$dir" "$sid" | wc -l | tr -d ' ')" 3 "the readable items survive"
 
+# 8. Where an ask stands: open, running, waiting or done. A running or waiting item is
+# still pending, so it is listed and rendered with its state, and only done leaves.
+rm -f "$dir/$sid.md"
+for t in 'Fix the footer.' 'Is the form live?' 'Put our hours on the contact page.'; do
+  ledger append "$dir" "$(hook "$t")" >/dev/null
+done
+ledger mark "$dir" "$sid" 2 running
+ledger mark "$dir" "$sid" 3 waiting
+h_assert_eq "$(grep -c '^2\. running ' "$dir/$sid.md")" 1 "an item can be marked running"
+h_assert_eq "$(grep -c '^3\. waiting ' "$dir/$sid.md")" 1 "an item can be marked waiting"
+h_assert_eq "$(ledger open "$dir" "$sid" | wc -l | tr -d ' ')" 3 "running and waiting items are still pending"
+out=$(ledger render "$dir" "$sid" 6000)
+case "$out" in *"2. (running) Is the form live?"*) h_ok "a running item renders with its state" ;; *) h_fail "a running item does not render with its state: $out" ;; esac
+case "$out" in *"3. (waiting) Put our hours"*) h_ok "a waiting item renders with its state" ;; *) h_fail "a waiting item does not render with its state" ;; esac
+case "$out" in *"1. Fix the footer."*) h_ok "an open item renders with no state word" ;; *) h_fail "an open item renders wrongly" ;; esac
+ledger mark "$dir" "$sid" 9 "done"
+h_assert_eq "$(grep -c -E '^9\. ' "$dir/$sid.md")" 0 "marking an item that is not there adds nothing"
+ledger mark "$dir" "$sid" 2 bogus
+h_assert_eq "$(grep -c '^2\. running ' "$dir/$sid.md")" 1 "an unknown state changes nothing"
+ledger mark "$dir" "$sid" 2 "done"
+ledger mark "$dir" "$sid" 2 waiting
+h_assert_eq "$(grep -c '^2\. done ' "$dir/$sid.md")" 1 "a done item stays done"
+
+# 9. Accounting for a reply: each pending ask must be named by its number with done,
+# running or waiting. The reply moves the state; what it leaves out is handed back.
+rm -f "$dir/$sid.md"
+for t in 'Fix the footer.' 'Is the form live?' 'Put our hours on the contact page.'; do
+  ledger append "$dir" "$(hook "$t")" >/dev/null
+done
+printf '%s\n' '1. Fix the footer: done.' '2. Is the form live? Yes, it is working now.' >"$H_TMP/reply.md"
+missing=$(ledger account "$dir" "$sid" "$H_TMP/reply.md")
+h_assert_eq "$missing" "2. Is the form live?
+3. Put our hours on the contact page." "the asks the reply left out, or named with no state, are handed back"
+h_assert_eq "$(grep -c '^1\. done ' "$dir/$sid.md")" 1 "an ask the reply calls done is closed"
+h_assert_eq "$(grep -c '^2\. open ' "$dir/$sid.md")" 1 "a reply that names no state leaves the ask open"
+printf '%s\n' 'Number 2 is done.' '**3.** Waiting on you for the hours.' >"$H_TMP/reply.md"
+missing=$(ledger account "$dir" "$sid" "$H_TMP/reply.md")
+h_assert_empty "$missing" "every pending ask is now accounted for"
+h_assert_eq "$(grep -c '^2\. done ' "$dir/$sid.md")" 1 "'Number 2 is done' closes item 2"
+h_assert_eq "$(grep -c '^3\. waiting ' "$dir/$sid.md")" 1 "a waiting line moves item 3 to waiting"
+# A decimal at the start of a line is not an item number.
+printf '%s\n' '3.5 hours is the estimate.' >"$H_TMP/reply.md"
+missing=$(ledger account "$dir" "$sid" "$H_TMP/reply.md")
+case "$missing" in "3. Put our hours on the contact page.") h_ok "a decimal is not taken for item 3" ;; *) h_fail "a decimal was taken for an item number: [$missing]" ;; esac
+# One pending ask and the contract's closing line: the closing is the state.
+rm -f "$dir/$sid.md"
+ledger append "$dir" "$(hook 'Change the colour to green.')" >/dev/null
+printf '%s\n' 'The page is green now.' '' 'Still running: the footer pass.' >"$H_TMP/reply.md"
+missing=$(ledger account "$dir" "$sid" "$H_TMP/reply.md")
+h_assert_empty "$missing" "one pending ask: the closing line accounts for it"
+h_assert_eq "$(grep -c '^1\. running ' "$dir/$sid.md")" 1 "one pending ask: 'Still running' marks it running"
+printf '%s\n' 'The page is green now.' >"$H_TMP/reply.md"
+missing=$(ledger account "$dir" "$sid" "$H_TMP/reply.md")
+case "$missing" in "1. Change the colour to green.") h_ok "one pending ask and no closing: handed back" ;; *) h_fail "no closing was accepted: [$missing]" ;; esac
+# With two pending asks the closing line alone does not account for either.
+ledger append "$dir" "$(hook 'Also the footer.')" >/dev/null
+printf '%s\n' 'All set.' '' 'Done.' >"$H_TMP/reply.md"
+missing=$(ledger account "$dir" "$sid" "$H_TMP/reply.md")
+h_assert_eq "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')" 2 "two pending asks: the closing line alone accounts for neither"
+# The numbers survive a damaged file, and a session with no ledger has nothing missing.
+h_assert_empty "$(ledger account "$dir" "no-such-session" "$H_TMP/reply.md")" "no ledger: nothing is missing"
+h_assert_empty "$(ledger account "$dir" "../escape" "$H_TMP/reply.md")" "an id that is a path: nothing is missing"
+
 h_done

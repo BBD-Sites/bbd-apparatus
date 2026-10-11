@@ -392,8 +392,17 @@ is empty once the harness's own wrappers are removed (`<task-notification>`,
 `<system-reminder>` and the parts of a slash command), a slash command, a JSON-shaped
 prompt, and a system notification. Typed text beside a wrapper is recorded on its own;
 an unclosed wrapper is cut to the end of the prompt. One item keeps at most 4,000
-characters. Closing an item is a later task's; the file format and the read path are
-here.
+characters.
+
+An item is `open` when it is said, then `running`, `waiting` or `done`. The Stop gate
+(section 13) reads each reply for where every pending ask stands and moves the item
+(`lib/ledger.py account`): a line that begins with the ask's number (`3.`, `3)`,
+`Number 3`, `Ask 3`) and says done, running or waiting moves item 3 to that state, on
+its own line or the line after; with exactly one ask pending, the contract's closing
+line (`Done.`, `Still running: ...`, `Waiting on you for ...`) is its state. Only `done`
+leaves the list, and a done item is never reopened. Running and waiting items are
+injected like open ones, labelled `(running)` or `(waiting)`, so they come back on every
+prompt and after every compaction until a reply closes them.
 
 **What a prompt injects, in order:**
 
@@ -404,7 +413,7 @@ here.
    empty, gives no section.
 3. `.apparatus/standing.md` in the tenant repository, the standing instructions, the
    same way.
-4. The session's open asks, oldest first, each under its number.
+4. The session's pending asks (open, running or waiting), oldest first, each under its number.
 
 **What a compaction injects, in order:** `text/compact-notice.md` (one sentence saying
 the session was compacted and that memory in the store is unaffected), then the rules
@@ -531,6 +540,17 @@ plan, and when the reader finds something, the turn is held once with the findin
 the reason, so the model sends a corrected reply. Stop fires after the reply is already
 on screen, so "read before it is sent" can only mean this: one loop-guarded block,
 followed by the corrected reply. Nothing else here reaches the person.
+
+**The ask ledger check** comes first, on every pass, the second included. The asks the
+reader will be given are taken from the ledger, then the reply is read for where each
+pending ask stands (section 11) and the ledger moves to match. A reply of 50 prose words
+or more that names no state for an ask that is still pending is held once, with those
+asks handed back, one per line, under one sentence asking for the reply again with each
+ask under its own number, marked done, running or waiting. That block uses the turn's one
+block (`lib/loopguard.py`), so the corrected reply is the second pass and goes through,
+and a reply held for the ledger is not also sent to the reader. A shorter reply is never
+held for this; it can still close the asks it names. A session with no ledger has
+nothing to check.
 
 **When it reads.** All of these must hold, in this order; otherwise the step exits 0
 with nothing printed and one line in the log saying which failed:

@@ -5,21 +5,25 @@
 # (reader/reader.py, one headless `claude -p`), and when the reader finds something,
 # the turn is held once with the findings as the reason, so the model sends a
 # corrected reply. In order:
-#   1. stop_hook_active: this Stop is the second pass of the turn, after a block; the
+#   1. The draft is last_assistant_message. The reply is read for where each pending
+#      ask stands, by its number (lib/ledger.py account), and the ask ledger moves to
+#      match, on every pass. A reply of 50 prose words or more that leaves an ask out
+#      is held once, with the missing asks handed back (design D23).
+#   2. stop_hook_active: this Stop is the second pass of the turn, after a block; the
 #      reply goes through whatever the reader would say.
-#   2. The draft is last_assistant_message. Under 50 prose words there is nothing to
-#      read. The rules file the marker names is read against when it exists; a
-#      repository with none is read against the reply contract alone.
-#   3. A receipt for this exact draft (lib/receipt.py) means it was read already.
-#   4. The reader runs under a bound (60 seconds; BBD_READER_BOUND overrides, 1 to 600)
+#   3. Under 50 prose words there is nothing to read. The rules file the marker names
+#      is read against when it exists; a repository with none is read against the
+#      reply contract alone.
+#   4. A receipt for this exact draft (lib/receipt.py) means it was read already.
+#   5. The reader runs under a bound (60 seconds; BBD_READER_BOUND overrides, 1 to 600)
 #      with the reply contract, the rules file, the session's open asks and the draft.
-#   5. A verdict of fix becomes one block, at most once per turn (lib/loopguard.py,
+#   6. A verdict of fix becomes one block, at most once per turn (lib/loopguard.py,
 #      keyed by the session and prompt_id, else the draft's hash). A verdict of send,
 #      and an answer out of shape, lets the reply through. When the reader itself
 #      could not run (no `claude`, a timeout, a non-zero exit): on a desktop home the
 #      reply goes through, logged; in a cloud session the same one block hands the
 #      model the assembled prompt to give to a reader through the Agent tool.
-#   6. A receipt is written for every read and every attempt, never for a skip.
+#   7. A receipt is written for every read and every attempt, never for a skip.
 # Stdout here becomes the Stop decision, so nothing but that one object is printed.
 # shellcheck source=../lib/common.sh
 . "$BBD_CHECKOUT/launcher/lib/common.sh" || exit 0
@@ -54,17 +58,45 @@ v = d.get(sys.argv[2], "") if isinstance(d, dict) else ""
 sys.stdout.write(str(v) if not isinstance(v, bool) else ("1" if v else "0"))' "$1" "$2" 2>>"$BBD_LOG"
 }
 
-# 1. The second pass of this turn.
+# 1. The draft, and where the person's asks stand. The asks the reply has to answer are
+# taken first (the reader is given them below), then the reply is read for each pending
+# ask by its number, marked done, running or waiting (lib/ledger.py account), and the
+# ledger moves to match on every pass, the second one too. A reply of fifty prose words
+# or more that leaves an ask out is held once with the missing asks handed back
+# (design D23); a shorter one is an acknowledgement and is not.
+draft=$(mktemp "$BBD_BASE/state/draft.XXXXXX" 2>/dev/null) || exit 0
+python3 "$BBD_CHECKOUT/lib/hookio.py" text "$BBD_INPUT" last_assistant_message >"$draft" 2>>"$BBD_LOG"
+sid=$(field session_id)
+pid=$(field prompt_id)
+asks=$(mktemp "$BBD_BASE/state/asks.XXXXXX" 2>/dev/null) || exit 0
+words=$(python3 "$BBD_CHECKOUT/reader/reader.py" words "$draft" 2>>"$BBD_LOG")
+case "$words" in ''|*[!0-9]*) words=0 ;; esac
+missing=""
+if [ -n "$sid" ]; then
+  python3 "$BBD_CHECKOUT/lib/ledger.py" open "$ledger_dir" "$sid" >"$asks" 2>>"$BBD_LOG"
+  missing=$(python3 "$BBD_CHECKOUT/lib/ledger.py" account "$ledger_dir" "$sid" "$draft" 2>>"$BBD_LOG")
+fi
+
+# 2. The second pass of this turn, after a block: the reply goes through.
 if python3 "$BBD_CHECKOUT/lib/hookio.py" flag "$BBD_INPUT" stop_hook_active 2>>"$BBD_LOG"; then
   bbd_log "stop-gate: the second pass of this turn; the reply goes through"
   exit 0
 fi
+turn=$pid
+[ -n "$turn" ] || turn=$(python3 "$BBD_CHECKOUT/lib/receipt.py" hash "$draft" 2>>"$BBD_LOG")
+if [ -n "$missing" ] && [ "$words" -ge 50 ]; then
+  if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
+    {
+      printf 'Your reply does not say where these asks stand. Send it again with each one under its own number, marked done, running or waiting:\n\n'
+      printf '%s\n' "$missing" | cut -c1-240 | head -n 20
+    } | python3 "$BBD_CHECKOUT/lib/hookio.py" block 2>>"$BBD_LOG"
+    bbd_log "stop-gate: held once; $(printf '%s\n' "$missing" | wc -l | tr -d ' ') ask(s) left out of the reply"
+    exit 0
+  fi
+  bbd_log "stop-gate: asks left out, but a block already happened this turn; the reply goes through"
+fi
 
-# 2. The draft, and whether there is anything to read it against.
-draft=$(mktemp "$BBD_BASE/state/draft.XXXXXX" 2>/dev/null) || exit 0
-python3 "$BBD_CHECKOUT/lib/hookio.py" text "$BBD_INPUT" last_assistant_message >"$draft" 2>>"$BBD_LOG"
-words=$(python3 "$BBD_CHECKOUT/reader/reader.py" words "$draft" 2>>"$BBD_LOG")
-case "$words" in ''|*[!0-9]*) words=0 ;; esac
+# 3. Whether there is anything to read it against.
 if [ "$words" -lt 50 ]; then
   bbd_log "stop-gate: $words prose words; nothing to read"
   exit 0
@@ -77,22 +109,16 @@ if [ -n "${BBD_RULES:-}" ] && [ -s "$BBD_PROJECT_ROOT/$BBD_RULES" ]; then
   rules=$BBD_PROJECT_ROOT/$BBD_RULES
 fi
 
-# 3. Read once.
+# 4. Read once.
 if python3 "$BBD_CHECKOUT/lib/receipt.py" exists "$receipts" "$draft" 2>>"$BBD_LOG"; then
   bbd_log "stop-gate: this draft was read already; the reply goes through"
   exit 0
 fi
 
-sid=$(field session_id)
-pid=$(field prompt_id)
 stop_reason=$(field stop_reason)
 
-# 4. The reader.
-asks=$(mktemp "$BBD_BASE/state/asks.XXXXXX" 2>/dev/null) || exit 0
+# 5. The reader.
 result=$(mktemp "$BBD_BASE/state/verdict.XXXXXX" 2>/dev/null) || exit 0
-if [ -n "$sid" ]; then
-  python3 "$BBD_CHECKOUT/lib/ledger.py" open "$ledger_dir" "$sid" >"$asks" 2>>"$BBD_LOG"
-fi
 python3 "$BBD_CHECKOUT/reader/reader.py" read \
   --draft "$draft" --contract "$BBD_CHECKOUT/text/reply-contract.md" \
   --rules "$rules" --asks "$asks" --kind reply --bound "$BOUND" >"$result" 2>>"$BBD_LOG"
@@ -103,7 +129,7 @@ elapsed=$(jget "$result" elapsed)
 [ -n "$status" ] || status=failed
 [ "$verdict" = fix ] || verdict=send
 
-# 5. One block per turn: the reader's findings, or, in a cloud session where the
+# 6. One block per turn: the reader's findings, or, in a cloud session where the
 # reader could not run (no `claude` on the machine, a timeout, a failure), the
 # assembled prompt handed to the model to give to a reader of its own through the
 # Agent tool. On a desktop home that failure lets the reply through, logged.
@@ -113,8 +139,6 @@ case "$status" in
 esac
 blocked=0
 if [ "$verdict" = fix ] || [ -n "$handback" ]; then
-  turn=$pid
-  [ -n "$turn" ] || turn=$(python3 "$BBD_CHECKOUT/lib/receipt.py" hash "$draft" 2>>"$BBD_LOG")
   if python3 "$BBD_CHECKOUT/lib/loopguard.py" allow "$guard" "$sid" "$turn" 2>>"$BBD_LOG"; then
     blocked=1
     if [ -n "$handback" ]; then
@@ -136,7 +160,7 @@ if [ "$verdict" = fix ] || [ -n "$handback" ]; then
   fi
 fi
 
-# 6. The receipt.
+# 7. The receipt.
 python3 "$BBD_CHECKOUT/lib/receipt.py" write "$receipts" "$draft" \
   "session=$sid" "prompt_id=$pid" "status=$status" "verdict=$verdict" "findings=${count:-0}" \
   "blocked=$blocked" "elapsed=${elapsed:-0}" "stop_reason=$stop_reason" "words=$words" \
