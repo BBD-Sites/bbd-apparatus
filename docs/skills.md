@@ -3,7 +3,7 @@
 Four skills run in the owner's own session, on the owner's own plan. Each is a stub in the
 plugin (`plugin/skills/NAME/SKILL.md`) and in the tenant repository
 (`templates/tenant-repo/.claude/skills/NAME/SKILL.md`, so a cloud session has them too),
-except `plan`, which stays out of the tenant repository while it is gated (below). A
+except `plan`, which stays out of the plugin and the tenant repository while it is gated (below). A
 stub carries no instructions. It runs `skill NAME` through the bootstrap, and the launcher's
 skill event (`launcher/events/skill.sh`) prints the text in `text/skills/NAME.md` from the
 checkout, so a skill changes here and never in the plugin.
@@ -52,16 +52,46 @@ everywhere. Three locks hold it shut for a buyer on `stable`:
 
 - The tenant template (`templates/tenant-repo/.claude/skills/`) has no `plan` stub, so a
   buyer's vault never gets one.
-- The plugin's `plan` stub sets `disable-model-invocation: true` and has a description with
-  no trigger words, so the model cannot pick it by description on any channel. It is reached
-  by name only, which is how tenant zero runs it on `next`.
+- The plugin (`plugin/skills/`) has no `plan` skill at all, so it is not listed and typing
+  `/bbd:plan` finds nothing. The text stays in the checkout (`text/skills/plan.md`) and the
+  skill event keeps its support, because the checkout is not what a buyer's plugin lists.
 - The skill event prints nothing for `plan` on a channel the gate does not open.
 
-Opening it on `stable` is one signed edit that does two things: it adds `stable` to
-`data/skill-gates.json`, and it adds the `plan` stub back to the tenant template (with its
-trigger description, and without `disable-model-invocation`, in the plugin too). The manifest
-test expects the template to carry every plugin stub except the ones named in the gate file,
-so it fails until both halves are done.
+### Opening the plan skill for tenant zero
+
+Tenant zero runs it on `next` by committing its own stub in its own vault, at
+`.claude/skills/plan/SKILL.md`. That file lives in the vault repository, not here. The same
+text is `templates/tenant-zero/plan-SKILL.md`, a template file that provisioning does not
+copy (a test holds that nothing that installs or provisions names it, and that
+`templates/tenant-repo/` does not include it). The exact stub:
+
+```
+---
+name: plan
+description: The owner's planning loop. Reachable by its name only.
+disable-model-invocation: true
+allowed-tools: Bash(bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh" skill plan repo)
+---
+
+This stub carries no instructions of its own. The skill's instructions live in
+the apparatus checkout, so they can change without this repository changing.
+
+Run this command with the Bash tool, from the project directory, and follow what it prints:
+
+    bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bbd-launch.sh" skill plan repo
+
+If it prints nothing, the planning loop is not open on this channel, or the skill is not
+in the checkout yet. Say so in one line and go on without it.
+```
+
+### Opening it for buyers
+
+One signed edit does three things together: it adds `stable` to `data/skill-gates.json`, it
+puts a `plan` stub into the plugin (`plugin/skills/plan/SKILL.md`, with a description that
+says when to use it) and it puts the same stub into the tenant template
+(`templates/tenant-repo/.claude/skills/plan/SKILL.md`). The plugin shell changes, so its
+version moves in that edit. The manifest test expects the template to carry every plugin
+stub except the ones named in the gate file.
 
 ## Not built
 

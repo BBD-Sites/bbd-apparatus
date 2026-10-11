@@ -288,8 +288,9 @@ for d in "$TEMPLATE"/.claude/skills/*/; do
   check_skill "${d}SKILL.md" "$REPO_BOOT" repo
 done
 skill_names() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's#.*/##' | sort | tr '\n' ' '; }
-# A gated skill (data/skill-gates.json) is in the plugin only: a buyer's vault never gets its
-# stub until the gate opens on stable, in the same signed edit that adds the stub back here.
+# A gated skill (data/skill-gates.json) may be absent from both the plugin and the template while
+# it is gated (plan is: tenant zero commits its own stub in its own vault). If a plugin carries
+# one, the template still must not; the gate opens on stable in the same signed edit that adds both.
 gated=$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])))))' "$root/data/skill-gates.json")
 expected=""
 for n in $(skill_names "$PLUGIN_DIR"/skills); do

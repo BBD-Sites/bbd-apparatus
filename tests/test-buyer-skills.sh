@@ -34,8 +34,9 @@ for s in $SKILLS; do
   f="$root/text/skills/$s.md"
   if [ -s "$f" ]; then h_ok "$s: the text exists"; else h_fail "$s: text/skills/$s.md is missing"; continue; fi
   stubs="$root/plugin/skills/$s/SKILL.md"
-  # a gated skill has no stub in the tenant template (docs/skills.md, the planning gate)
-  [ "$s" = plan ] || stubs="$stubs $root/templates/tenant-repo/.claude/skills/$s/SKILL.md"
+  # a gated skill has no stub in the plugin or the tenant template (docs/skills.md, the planning gate)
+  stubs="$root/plugin/skills/$s/SKILL.md $root/templates/tenant-repo/.claude/skills/$s/SKILL.md"
+  [ "$s" = plan ] && stubs=""
   for stub in $stubs; do
     if [ -f "$stub" ]; then h_ok "$s: stub ${stub#"$root"/}"; else h_fail "$s: stub ${stub#"$root"/} is missing"; fi
   done
@@ -94,14 +95,41 @@ h_assert_eq "$(h_run_code plan-hs)" 0 "plan: closed, the event still exits 0"
 skill plan "$home_n"
 h_assert_eq "$(out_of plan "$home_n")" "$(cat "$root/text/skills/plan.md")" "plan: the text is printed on next"
 
-# plan on stable is genuinely absent for a buyer: the tenant template carries no plan stub,
-# and the plugin stub cannot be picked by its description on any channel.
+# plan on stable is genuinely absent for a buyer: neither the plugin nor the tenant template
+# carries a plan skill, so it is not listed and cannot be typed.
 if [ ! -e "$root/templates/tenant-repo/.claude/skills/plan" ]; then h_ok "plan: the tenant template has no plan skill"; else h_fail "plan: the tenant template still carries the plan stub"; fi
-planstub="$root/plugin/skills/plan/SKILL.md"
-planfront=$(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && $0 == "---" { exit } NR > 1 { print }' "$planstub")
-if printf '%s\n' "$planfront" | grep -q '^disable-model-invocation: true$'; then h_ok "plan: the plugin stub cannot be invoked by the model"; else h_fail "plan: the plugin stub does not set disable-model-invocation: true"; fi
-plandesc=$(printf '%s\n' "$planfront" | sed -n 's/^description:[[:space:]]*//p')
-if printf '%s' "$plandesc" | grep -q -i -E 'use when|to-do|today|weekly|review|waiting|plans'; then h_fail "plan: the stub description still carries trigger words: $plandesc"; else h_ok "plan: the stub description carries no trigger words"; fi
+if [ ! -e "$root/plugin/skills/plan" ]; then h_ok "plan: the plugin has no plan skill"; else h_fail "plan: the plugin still carries a plan skill"; fi
+if grep -rq -e 'skill plan' "$root/plugin" "$root/templates/tenant-repo"; then h_fail "plan: something in the plugin or the template still runs skill plan"; else h_ok "plan: nothing in the plugin or the template runs skill plan"; fi
+
+# Tenant zero opens it by committing its own stub in its own vault. The stub is a template
+# file that provisioning does not copy, and the same text is in docs/skills.md.
+t0="$root/templates/tenant-zero/plan-SKILL.md"
+if [ -f "$t0" ]; then h_ok "plan: the tenant-zero stub template exists"; else h_fail "plan: templates/tenant-zero/plan-SKILL.md is missing"; fi
+if [ -f "$t0" ] && grep -q '^name: plan$' "$t0" && grep -q 'skill plan repo' "$t0"; then h_ok "plan: the tenant-zero stub is named plan and runs skill plan"; else h_fail "plan: the tenant-zero stub is not a plan stub"; fi
+if [ -f "$t0" ] && python3 - "$t0" "$root/docs/skills.md" <<'PY'
+import sys
+stub = open(sys.argv[1]).read().strip()
+doc = open(sys.argv[2]).read()
+sect = doc.split("Opening the plan skill for tenant zero", 1)[-1]
+sys.exit(0 if stub in sect else 1)
+PY
+then h_ok "plan: docs/skills.md carries the tenant-zero stub text exactly"; else h_fail "plan: docs/skills.md does not carry the tenant-zero stub text exactly"; fi
+if [ ! -e "$root/templates/tenant-repo/tenant-zero" ] && [ -z "$(find "$root/templates/tenant-repo" -name 'plan-SKILL.md' -o -path '*tenant-zero*' 2>/dev/null)" ]; then h_ok "plan: the template provisioning copies does not include templates/tenant-zero"; else h_fail "plan: templates/tenant-repo includes the tenant-zero stub"; fi
+if grep -rln -e 'tenant-zero' "$root/install" "$root/bin" "$root/lib" "$root/launcher" "$root/plugin" 2>/dev/null | grep -q .; then h_fail "plan: install, bin, lib, launcher or plugin names templates/tenant-zero (provisioning must not copy it)"; else h_ok "plan: nothing that installs or provisions names templates/tenant-zero"; fi
+
+# Tenant zero's vault holds the stub: the event prints the plan text on next and nothing on stable.
+if [ -f "$t0" ]; then
+  zrepo=$(h_fake_repo zero)
+  h_mark "$zrepo" tenant-a
+  mkdir -p "$zrepo/.claude/skills/plan"
+  cp "$t0" "$zrepo/.claude/skills/plan/SKILL.md"
+  h_git -C "$zrepo" add .claude/skills/plan/SKILL.md
+  h_git -C "$zrepo" commit -q -m "chore: tenant zero opens the plan skill"
+  h_launch zero-next "$home_n" CLAUDE_PROJECT_DIR="$zrepo" -- "$boot" skill plan </dev/null
+  h_assert_eq "$(h_run_out zero-next)" "$(cat "$root/text/skills/plan.md")" "plan: tenant zero's vault prints the plan text on next"
+  h_launch zero-stable "$home_s" CLAUDE_PROJECT_DIR="$zrepo" -- "$boot" skill plan </dev/null
+  h_assert_empty "$(h_run_out zero-stable)" "plan: tenant zero's vault prints nothing on stable"
+fi
 
 # a name with no text prints nothing.
 skill no-such-skill "$home_n"
@@ -173,7 +201,7 @@ if { has "$intake" "already exists" || has "$intake" "If RULES.md already exists
 
 # 6.1 / 7.35 plan: tiers, dates and Big 3 only; the horizons all at once; waiting-on with
 # who and since; done with a date; recurring; the brief off.
-for need in "day, week, month, year and five years" "Big 3" "tier" "waiting: Name since" "done: date" "every: 30d" "no priority labels" "milestone" "Roll the near ones from the far ones" "ask nothing twice"; do
+for need in "asked about one business or area, show only its items" "list the [x] items done in the period" "Never put a done item on Today" "day, week, month, year and five years" "Big 3" "tier" "waiting: Name since" "done: date" "every: 30d" "no priority labels" "milestone" "Roll the near ones from the far ones" "ask nothing twice"; do
   if { has "$plan" "$need"; }; then h_ok "plan: says [$need]"; else h_fail "plan: missing [$need]"; fi
 done
 if { has "$plan" "set to never" && has "$plan" "no push, text or email"; }; then h_ok "plan: the brief is never and nothing is pushed"; else h_fail "plan: the brief default is not stated"; fi
