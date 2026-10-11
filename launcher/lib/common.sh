@@ -298,3 +298,25 @@ bbd_bounded() {
   wait "$watcher" 2>/dev/null || true
   return "$rc"
 }
+
+# bbd_vault_pull SECONDS: bring in what another surface saved, at the start of a turn
+# (lib/vaultsync.py pull: a fast-forward and nothing else, only in a marked repository,
+# nothing when the tree holds anything outside the vault). It takes the same lock as the
+# Stop step's save, so the two never touch the tree at once, and gives up at once if the
+# lock is held. Bounded, and fail open: whatever happens, it returns 0 and prints nothing,
+# so it can never block or change the prompt it runs ahead of.
+bbd_vault_pull() {
+  local secs=${1:-4} lock settle result
+  lock=$BBD_BASE/state/sync.lock
+  if ! bbd_lock "$lock" 120; then
+    bbd_log "vault pull: another run holds the lock"
+    return 0
+  fi
+  mkdir -p "$BBD_BASE/state/settle" 2>/dev/null
+  settle=$BBD_BASE/state/settle/$(python3 "$BBD_CHECKOUT/lib/vaultsync.py" state-name "$BBD_PROJECT_ROOT" 2>/dev/null)
+  result=$(bbd_bounded "$secs" python3 "$BBD_CHECKOUT/lib/vaultsync.py" pull "$BBD_PROJECT_ROOT" \
+    --deadline "$((secs - 1))" --settle "$settle" 2>/dev/null) || result=""
+  bbd_unlock "$lock"
+  bbd_log "vault pull: ${result:-no answer}"
+  return 0
+}

@@ -309,4 +309,127 @@ h_hook_json UserPromptSubmit cwd="$vault6" session_id=sid-sync prompt="Settled."
   | h_launch prompt-settled "$home" -- "$boot" prompt plugin
 if has "$(h_run_out prompt-settled)" "40-areas/shared.md"; then h_fail "a settled page is still named"; else h_ok "a settled page is no longer named"; fi
 
+# 17. The start of a turn brings the other surface's pages in (lib/vaultsync.py pull,
+# run by the prompt step): a note pushed from a second clone is on
+# the first clone's disk when its next prompt is handled. Only a fast-forward, only on
+# a branch, only when the tree holds nothing outside the vault, never in an unmarked
+# repository, never past its bound, and always fail open.
+pull_in() { python3 "$sync_py" pull "$1" --deadline "${3:-20}" --settle "${2:-$settle1}"; }
+vault7=$(h_fake_repo seventh)
+h_mark "$vault7" tenant-a
+sync_in "$vault7" "$tmp/s7.txt" >/dev/null
+surface7=$tmp/surface7
+git clone -q "$tmp/seventh.git" "$surface7" 2>/dev/null
+git -C "$surface7" config user.name "$H_GIT_NAME"
+git -C "$surface7" config user.email "$H_GIT_EMAIL"
+git -C "$surface7" config commit.gpgsign false
+phone_note() { # NAME: a note saved from the phone surface
+  git -C "$surface7" pull -q --no-rebase --no-edit origin main 2>/dev/null
+  put "$surface7" "00-inbox/$1.md" "$1 from the phone"
+  git -C "$surface7" add -A
+  h_git -C "$surface7" commit -q -m "phone $1"
+  git -C "$surface7" push -q origin HEAD:main
+}
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" nothing "nothing new on the remote: nothing done"
+phone_note first
+h_hook_json UserPromptSubmit cwd="$vault7" session_id=sid-pull prompt="What did I add from my phone?" \
+  | h_launch prompt-pull "$home" CLAUDE_PROJECT_DIR="$vault7" -- "$boot" prompt plugin
+h_assert_hook_run prompt-pull "a prompt after a note was added elsewhere"
+if [ -f "$vault7/00-inbox/first.md" ]; then h_ok "the next prompt sees the page the phone saved"; else h_fail "the phone's note is not on this surface after the prompt"; fi
+h_assert_eq "$(head_of "$vault7")" "$(head_of "$surface7")" "the fast-forward leaves this surface at the remote head"
+if has "$(h_run_out prompt-pull)" additionalContext; then h_ok "the prompt still hands the model its context"; else h_fail "the prompt printed no context after a pull"; fi
+if grep -q 'vault pull: pulled' "$base/state/launcher.log"; then h_ok "the log says the vault was brought in"; else h_fail "the log does not say the vault was brought in"; fi
+
+# A session start makes no network call (section 12); the first prompt that follows it
+# is what brings the pages in.
+phone_note second
+h_hook_json SessionStart cwd="$vault7" session_id=sid-pull2 source=startup model=test-model \
+  | h_launch start-pull "$home" CLAUDE_PROJECT_DIR="$vault7" -- "$boot" session-start plugin
+h_assert_hook_run start-pull "a session start after a note was added elsewhere"
+if [ -f "$vault7/00-inbox/second.md" ]; then h_fail "the session start fetched, against section 12"; else h_ok "the session start leaves the fetch to the first prompt"; fi
+
+# A local page waiting to be saved does not stop the pages of other names coming in,
+# and is not touched.
+put "$vault7" "00-inbox/mine.md" "written here, not yet saved"
+phone_note third
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" pulled "local vault changes of other names: fast-forwarded"
+if [ -f "$vault7/00-inbox/third.md" ] && [ "$(cat "$vault7/00-inbox/mine.md")" = "written here, not yet saved" ]; then h_ok "the local page is untouched and the new one is in"; else h_fail "the pull disturbed the local page or missed the new one"; fi
+rm -f "$vault7/00-inbox/mine.md"
+
+# A page in conflict on the remote is named for the next turn to settle.
+mkdir -p "$surface7/40-areas"
+printf '%s\n' "<<<<<<< kept from this surface" "mine" "=======" "theirs" ">>>>>>> kept from the other surface" >"$surface7/40-areas/clash.md"
+git -C "$surface7" add -A
+h_git -C "$surface7" commit -q -m "phone clash"
+git -C "$surface7" push -q origin HEAD:main
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" pulled "a page holding two versions comes in"
+note=$(python3 "$sync_py" settle "$vault7" "$tmp/s7.txt" "$(h_repo_root)/text/settle.md")
+if has "$note" "40-areas/clash.md"; then h_ok "the pulled page is named for the next turn to settle"; else h_fail "the pulled page is not named: [$note]"; fi
+git -C "$surface7" pull -q --no-rebase --no-edit origin main 2>/dev/null
+
+# Nothing is done when the tree holds anything outside the vault: no fetch, no merge.
+phone_note fourth
+put "$vault7" "src/app.js" "half built"
+h_calls_reset git
+before=$(head_of "$vault7")
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" outside "a stray file: the pull is left alone"
+h_assert_eq "$(head_of "$vault7")" "$before" "outside: nothing merged"
+h_assert_empty "$(h_net_calls)" "outside: no fetch attempted"
+rm -rf "$vault7/src"
+
+# A detached head, a merge in progress, the marker's off switch.
+git -C "$vault7" checkout -q --detach
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" detached "a detached head: left alone"
+git -C "$vault7" checkout -q main
+python3 - "$vault7/.apparatus/vault.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["sync"] = False
+json.dump(d, open(sys.argv[1], "w"))
+PY
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" off "a marker with sync false: the pull is off"
+git -C "$vault7" checkout -q -- .apparatus/vault.json
+
+# Only a fast-forward: when both sides have commits the pull leaves the merge to the
+# Stop step, and the local commit stays.
+put "$vault7" "00-inbox/local-commit.md" "committed here"
+git -C "$vault7" add -A
+h_git -C "$vault7" commit -q -m "local commit"
+before=$(head_of "$vault7")
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" diverged "both sides have commits: not merged by the pull"
+h_assert_eq "$(head_of "$vault7")" "$before" "diverged: the head did not move"
+h_assert_eq "$(sync_in "$vault7" "$tmp/s7.txt")" pushed "the Stop step still merges and pushes them"
+if [ -f "$vault7/00-inbox/fourth.md" ]; then h_ok "the Stop step brought the other page in"; else h_fail "the Stop step lost the other page"; fi
+
+# An unmarked repository is never touched, even when its remote is ahead.
+vault8=$(h_fake_repo eighth)
+surface8=$tmp/surface8
+git clone -q "$tmp/eighth.git" "$surface8" 2>/dev/null
+git -C "$surface8" config user.name "$H_GIT_NAME"
+git -C "$surface8" config user.email "$H_GIT_EMAIL"
+git -C "$surface8" config commit.gpgsign false
+put "$surface8" "00-inbox/theirs.md" "not a vault"
+git -C "$surface8" add -A
+h_git -C "$surface8" commit -q -m "other"
+git -C "$surface8" push -q origin HEAD:main
+h_calls_reset git
+h_assert_eq "$(pull_in "$vault8" "$tmp/s8.txt")" unmarked "an unmarked repository: left alone"
+h_assert_empty "$(h_net_calls)" "unmarked: no fetch attempted"
+h_hook_json UserPromptSubmit cwd="$vault8" session_id=sid-unmarked prompt="Hello." \
+  | h_launch prompt-unmarked "$home" CLAUDE_PROJECT_DIR="$vault8" -- "$boot" prompt plugin
+if [ -f "$vault8/00-inbox/theirs.md" ]; then h_fail "a prompt in an unmarked repository pulled"; else h_ok "a prompt in an unmarked repository pulls nothing"; fi
+
+# A remote that cannot be reached, or hangs, never holds the prompt past the bound.
+git -C "$vault7" remote set-url origin "$tmp/nowhere.git"
+h_assert_eq "$(pull_in "$vault7" "$tmp/s7.txt")" offline "an unreachable remote: offline, nothing done"
+git -C "$vault7" remote set-url origin "$tmp/seventh.git"
+phone_note fifth
+start=$(date +%s)
+h_hook_json UserPromptSubmit cwd="$vault7" session_id=sid-hang prompt="Still there?" \
+  | h_launch prompt-hang "$home" H_FAKE_GIT_FETCH=hang H_FAKE_GIT_HANG=30 CLAUDE_PROJECT_DIR="$vault7" -- "$boot" prompt plugin
+took=$(( $(date +%s) - start ))
+h_assert_hook_run prompt-hang "a prompt while the remote hangs"
+if [ "$took" -le 9 ]; then h_ok "a hung remote does not hold the prompt (${took}s)"; else h_fail "a hung remote held the prompt ${took}s"; fi
+if has "$(h_run_out prompt-hang)" additionalContext; then h_ok "the prompt still hands the model its context"; else h_fail "a hung remote cost the prompt its context"; fi
+
 h_done

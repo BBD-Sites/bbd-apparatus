@@ -173,7 +173,7 @@ Set in the hook entries, which never change, so they are chosen generously (seco
 | Entry | Timeout |
 | --- | --- |
 | SessionStart | 20 |
-| UserPromptSubmit | 10 |
+| UserPromptSubmit | 10 (the vault pull inside it is bounded to 4) |
 | PreToolUse | 5 |
 | Stop gate | 90 |
 | Stop ship | asynchronous in the plugin, with an internal bound of 120; in a tenant repository's copy, 60, with an internal bound of 50 (section 10) |
@@ -412,6 +412,11 @@ line (`Done.`, `Still running: ...`, `Waiting on you for ...`) is its state. Onl
 leaves the list, and a done item is never reopened. Running and waiting items are
 injected like open ones, labelled `(running)` or `(waiting)`, so they come back on every
 prompt and after every compaction until a reply closes them.
+
+**The vault pull.** After the ask is recorded and before anything is injected, the prompt
+step brings in what another surface saved (`lib/vaultsync.py pull`, section 14: a
+fast-forward only, bounded to 4 seconds, fail open), so a note added from the phone is on
+disk, and in a page the model reads, on the very next turn.
 
 **What a prompt injects, in order:**
 
@@ -687,7 +692,8 @@ ship step has queued the turn's pointer, `launcher/events/stop-ship.sh` runs
 `lib/vaultsync.py sync` on the project root, under its own lock (`state/sync.lock`) and
 its own bound: 30 seconds in the plugin, 12 in a cloud session's repository copy, taken
 from the ship step's time. It is the same script on every surface, so a phone session and
-a desktop session save their work the same way.
+a desktop session save their work the same way. The save only sends; the other surface
+receives at the start of its next turn (the last subsection of this section).
 
 **What counts as the vault.** The folders `00-inbox`, `10-references`, `20-ideas`,
 `30-projects`, `40-areas`, `50-resources`, `60-archive`, `70-library`, `attachments` and
@@ -734,6 +740,34 @@ that later fast-forwards it in. Every prompt reads that file (`lib/vaultsync.py 
 forgets a page whose marker lines are gone, and, while one remains, injects
 `text/settle.md` naming the pages, so the model shows the two versions and asks which to
 keep, in the buyer's next turn. The buyer never sees a git conflict.
+
+**Bringing the other surface's pages in at the start of a turn.** Saving at Stop only
+sends; a note added from the phone is not on the desktop's disk until something fetches
+it, and the Stop step is too late for the turn that needed it. So `launcher/events/prompt.sh`
+(every UserPromptSubmit, before the settle note is worked out) runs
+`lib/vaultsync.py pull` through `bbd_vault_pull` in `launcher/lib/common.sh`, which takes
+the same lock as the save (`state/sync.lock`, given up at once if held) and a hard bound
+(4 seconds, inside the prompt hook's timeout of 10). SessionStart does not pull: section 12
+forbids a network call there, and the first prompt of the session follows it at once. The pull is
+`sync` narrowed to the one thing that is safe to do before the buyer's first word:
+
+- only in a repository that carries the marker (`unmarked` otherwise; the gate in
+  section 4 has refused an unmarked one before the step runs), and `off` when the marker
+  says `"sync": false`;
+- only on a branch (`detached`), with no merge, rebase or unmerged page in progress
+  (`busy`), and with nothing in the working tree outside the vault (`outside`): in that
+  case there is no fetch and no merge, as for the save;
+- only a fast-forward: the branch is fetched and, when it is strictly ahead, merged with
+  `--ff-only` (`pulled`). Nothing is committed or pushed. A branch with commits on both
+  sides is left for the Stop step to merge (`diverged`); already current, or no such
+  branch on the remote, is `nothing`; a remote that cannot be reached is `offline`; git
+  refusing because a local page would be overwritten is `failed`, and the tree is as it
+  was. Local, uncommitted pages of other names do not stop it.
+- A page that comes in holding two versions is recorded for the settle note, as after a
+  save.
+
+It fails open: the result goes to the log (`vault pull: <status>`), nothing is printed,
+and no failure, timeout or held lock changes the prompt it runs ahead of.
 
 ## 15. The duplicate-change guard: the pre-write step
 

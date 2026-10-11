@@ -7,6 +7,11 @@ touch git (design D2 and the tenant-repo requirements "The buyer never touches g
       Commit and push what changed under the vault's folders, on the buyer's current
       branch. Prints one line saying how it ended (see STATUS below). Exits 0 always.
 
+  vaultsync.py pull <project-root> [--deadline <seconds>] [--settle <state-file>]
+      The start-of-turn half (prompt and session-start steps): bring in what another
+      surface saved, so this turn reads it. Fetch the branch and fast-forward to it,
+      nothing more. Prints one line (see PULL below). Exits 0 always.
+
   vaultsync.py settle <project-root> <state-file>
       Print, for the next prompt, a note naming the pages that hold two versions, or
       nothing. Pages that no longer hold the marker lines are forgotten.
@@ -34,6 +39,15 @@ What it does, in this order, and the reasons it does nothing:
     loses a race is fetched, merged and tried again, three times at most.
   * No remote, or one that cannot be reached: the commit stays local and the next turn
     tries again.
+
+PULL is sync's safety rules, narrowed: only in a repository that carries the marker
+(`unmarked` otherwise), `off`, `detached`, `busy` and `outside` as for sync, and nothing
+done (no fetch, no merge) when the working tree holds a change outside the vault. It
+never commits, never pushes, never merges: a remote that is ahead is fast-forwarded
+(`pulled`, with git itself refusing if a local page would be overwritten, `failed`); a
+branch with commits on both sides is left to the Stop step (`diverged`). Also `nothing`
+(already current, or the branch is not on the remote) and `offline`. A page that comes in
+holding two versions is listed for the next prompt to settle, as after a sync.
 
 STATUS is one of: off, busy, detached, outside, nothing, committed, pushed, merged,
 kept-both:<n>, offline, failed.
@@ -412,6 +426,46 @@ def sync(root: str, seconds: float, state: str = "") -> str:
     return "failed"
 
 
+def pull(root: str, seconds: float, state: str = "") -> str:
+    """Fast-forward to the remote branch, and only that. See the PULL paragraph above."""
+    if not os.path.isfile(os.path.join(root, ".apparatus", "vault.json")):
+        return "unmarked"
+    clock = Clock(seconds)
+    git = Git(root, clock)
+    if marker(root).get("sync") is False:
+        return "off"
+    branch = git.out("symbolic-ref", "-q", "--short", "HEAD")
+    if not branch:
+        return "detached"
+    if busy(git):
+        return "busy"
+    paths = changed_paths(git)
+    if paths is None:
+        return "failed"
+    if any("U" in xy or xy in ("AA", "DD") for xy, _p in paths):
+        return "busy"
+    folders, files = allowed_paths(root)
+    if any(not is_allowed(p, folders, files) for _xy, p in paths):
+        return "outside"
+    if not git.ok("remote", "get-url", "origin"):
+        return "nothing"
+    remote_ref = "refs/remotes/origin/" + branch
+    fetched = git.run("fetch", "-q", "--no-tags", "origin", "+refs/heads/%s:%s" % (branch, remote_ref))
+    if fetched.returncode != 0:
+        lr = git.run("ls-remote", "--exit-code", "--heads", "origin", branch)
+        return "nothing" if lr.returncode == 2 else "offline"
+    remote = git.out("rev-parse", "-q", "--verify", remote_ref + "^{commit}")
+    head = git.out("rev-parse", "HEAD")
+    if not remote or remote == head or git.ok("merge-base", "--is-ancestor", remote, "HEAD"):
+        return "nothing"
+    if not git.ok("merge-base", "--is-ancestor", "HEAD", remote):
+        return "diverged"
+    if not git.ok("merge", "-q", "--ff-only", remote_ref):
+        return "failed"
+    remember(git, state, head, git.out("rev-parse", "HEAD"), [])
+    return "pulled"
+
+
 def settle_note(root: str, state: str, template: str) -> str:
     pages = [p for p in load_settle(state) if holds_two_versions(root, p)]
     save_settle(state, pages)
@@ -431,7 +485,7 @@ def state_name(root: str) -> str:
 
 
 def main(argv: list) -> int:
-    if len(argv) >= 2 and argv[0] == "sync":
+    if len(argv) >= 2 and argv[0] in ("sync", "pull"):
         seconds, state, rest = 25.0, "", argv[2:]
         while len(rest) >= 2:
             if rest[0] == "--deadline":
@@ -442,7 +496,7 @@ def main(argv: list) -> int:
             elif rest[0] == "--settle":
                 state = rest[1]
             rest = rest[2:]
-        print(sync(argv[1], seconds, state))
+        print((sync if argv[0] == "sync" else pull)(argv[1], seconds, state))
         return 0
     if len(argv) in (3, 4) and argv[0] == "settle":
         template = argv[3] if len(argv) == 4 else ""
@@ -453,7 +507,7 @@ def main(argv: list) -> int:
     if len(argv) == 2 and argv[0] == "state-name":
         print(state_name(argv[1]))
         return 0
-    print("usage: vaultsync.py sync ROOT [--deadline S] [--settle FILE] | settle ROOT FILE TEMPLATE"
+    print("usage: vaultsync.py sync|pull ROOT [--deadline S] [--settle FILE] | settle ROOT FILE TEMPLATE"
           " | state-name ROOT", file=sys.stderr)
     return 0
 

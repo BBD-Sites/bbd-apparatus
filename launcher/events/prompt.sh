@@ -3,6 +3,8 @@
 # follow (docs/launcher-contract.md section 11). In order:
 #   1. the ask goes into the session's ledger as the next numbered item, unless it is
 #      only a harness wrapper, a slash command or empty (lib/ledger.py decides);
+#   1b. the other surface's pages are brought in (lib/vaultsync.py pull: a fast-forward,
+#      bounded to four seconds, fail open), before the settle note below is worked out;
 #   2. one JSON object is printed for the dispatcher to pass on, carrying, in order:
 #      the reply contract and the witness rules (text/, the apparatus's own words, so
 #      they change here and not in the plugin), the tenant's rules file named in the
@@ -26,6 +28,11 @@ python3 "$BBD_CHECKOUT/lib/ledger.py" append "$ledger_dir" "$BBD_INPUT" >/dev/nu
 sid=$(python3 "$BBD_CHECKOUT/lib/hookio.py" field "$BBD_INPUT" session_id 2>>"$BBD_LOG")
 rules=""
 [ -n "${BBD_RULES:-}" ] && rules=$BBD_PROJECT_ROOT/$BBD_RULES
+
+# The other surface's pages first (lib/vaultsync.py pull): a note saved from the phone is
+# on this disk before the model reads anything. A fast-forward only, bounded to four
+# seconds, and it can never fail the prompt.
+bbd_vault_pull 4 || true
 
 # Pages that hold two versions, because two surfaces changed the same lines at once
 # (lib/vaultsync.py): the model is told to settle them with the person on this turn.
