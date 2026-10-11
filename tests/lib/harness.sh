@@ -186,7 +186,7 @@ h_calls() {
   return 0
 }
 
-# h_hook_json EVENT [key=value ...]: prints the JSON a Claude Code hook receives on
+# h_hook_json EVENT [key=value ...]: (a value of json:<text> is parsed as JSON) prints the JSON a Claude Code hook receives on
 # stdin, to pipe into a launcher. The common fields default to fresh values; any
 # key=value overrides one or adds an event field (prompt, source, model,
 # last_assistant_message, stop_reason). python3 does the quoting because stock macOS
@@ -211,7 +211,8 @@ for pair in pairs:
     key, sep, value = pair.partition("=")
     if not sep:
         sys.exit("h_hook_json: expected key=value, got %r" % pair)
-    doc[key] = value
+    # A value that starts with json: is parsed, for the nested fields (tool_input).
+    doc[key] = json.loads(value[5:]) if value.startswith("json:") else value
 try:
     print(json.dumps(doc))
     sys.stdout.flush()
