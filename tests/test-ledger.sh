@@ -185,4 +185,29 @@ h_assert_eq "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')" 2 "two pending ask
 h_assert_empty "$(ledger account "$dir" "no-such-session" "$H_TMP/reply.md")" "no ledger: nothing is missing"
 h_assert_empty "$(ledger account "$dir" "../escape" "$H_TMP/reply.md")" "an id that is a path: nothing is missing"
 
+# A done word after a negation is not done, and a running or waiting word on the line
+# wins over a done word. Two asks, so the closing line decides nothing.
+rm -f "$dir/$sid.md"
+ledger append "$dir" "$(hook 'Fix the logo.')" >/dev/null
+ledger append "$dir" "$(hook 'Fix the form.')" >/dev/null
+ledger append "$dir" "$(hook 'Fix the footer.')" >/dev/null
+printf '%s\n' '1. Logo: not done yet, still running.' '2. The form: I have not fixed it; waiting on the host.' \
+  'Number 3: it is not finished.' >"$H_TMP/reply.md"
+missing=$(ledger account "$dir" "$sid" "$H_TMP/reply.md")
+h_assert_eq "$(grep -c '^1\. running ' "$dir/$sid.md")" 1 "'not done yet, still running' is running, not done"
+h_assert_eq "$(grep -c '^2\. waiting ' "$dir/$sid.md")" 1 "'have not fixed it; waiting' is waiting, not done"
+h_assert_eq "$(grep -c '^3\. done ' "$dir/$sid.md")" 0 "'not finished' does not close the ask"
+case "$missing" in "3. Fix the footer.") h_ok "a negated done word states nothing: the ask is handed back" ;; *) h_fail "a negated done word was read as a state: [$missing]" ;; esac
+printf '%s\n' 'Number 1: done, it is larger.' "2. The form: it hasn't been touched, never mind: done." >"$H_TMP/reply.md"
+ledger account "$dir" "$sid" "$H_TMP/reply.md" >/dev/null
+h_assert_eq "$(grep -c '^1\. done ' "$dir/$sid.md")" 1 "a plain done still closes the ask"
+h_assert_eq "$(grep -c '^2\. done ' "$dir/$sid.md")" 1 "a negation in an earlier clause does not undo a done"
+for neg in "isn't" "wasn't" "didn't" "can't" "couldn't" "never" "yet to be" "no"; do
+  rm -f "$dir/$sid.md"
+  ledger append "$dir" "$(hook 'Fix the logo.')" >/dev/null
+  printf '%s\n' "Number 1: it $neg fixed." >"$H_TMP/reply.md"
+  ledger account "$dir" "$sid" "$H_TMP/reply.md" >/dev/null
+  h_assert_eq "$(grep -c '^1\. done ' "$dir/$sid.md")" 0 "'$neg fixed' does not close the ask"
+done
+
 h_done

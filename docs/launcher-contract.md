@@ -402,7 +402,12 @@ An item is `open` when it is said, then `running`, `waiting` or `done`. The Stop
 (section 13) reads each reply for where every pending ask stands and moves the item
 (`lib/ledger.py account`): a line that begins with the ask's number (`3.`, `3)`,
 `Number 3`, `Ask 3`) and says done, running or waiting moves item 3 to that state, on
-its own line or the line after; with exactly one ask pending, the contract's closing
+its own line or the line after. A running or waiting word on that line wins over a done
+word (the work is not over while the reply says it still runs), and a done word that
+follows a negation in its own clause (`not done yet`, `I have not fixed it`, `never`,
+`no`, `yet to`, `isn't`, `wasn't`, `didn't`, `can't`, `couldn't`) states nothing, so that
+ask is handed back rather than closed; a clause ends at a comma, semicolon, colon, full
+stop, dash or `but`. With exactly one ask pending, the contract's closing
 line (`Done.`, `Still running: ...`, `Waiting on you for ...`) is its state. Only `done`
 leaves the list, and a done item is never reopened. Running and waiting items are
 injected like open ones, labelled `(running)` or `(waiting)`, so they come back on every

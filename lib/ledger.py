@@ -174,9 +174,10 @@ def close(ledger_dir: str, sid: str, n: int) -> bool:
     return mark(ledger_dir, sid, n, "done")
 
 
-# Where a reply says an ask stands. The first of these to appear after the item's
-# number, on its line or the line after it, decides; the contract's own closing words
-# are the fallback when only one ask is pending.
+# Where a reply says an ask stands, read from the item's line or the line after it:
+# a running or waiting word (the first of them) decides, else a done word that no
+# negation denies; the contract's own closing words are the fallback when only one ask
+# is pending.
 STATE_WORDS = (
     ("done", re.compile(r"\b(done|finished|completed?|answered|fixed|resolved|closed)\b", re.I)),
     ("running", re.compile(r"\b(running|working on|in progress|underway|started|looking into)\b", re.I)),
@@ -199,13 +200,38 @@ def line_number(line: str) -> tuple:
     return None, ""
 
 
+# A done word is only done when nothing in its own clause denies it: "not done yet",
+# "I have not fixed it", "never finished". A clause ends at a comma, semicolon, colon,
+# full stop, dash or "but".
+NEGATION = re.compile(
+    r"\b(?:not|never|no|yet to|haven't|hasn't|isn't|wasn't|didn't|can't|couldn't|cannot)\b", re.I)
+CLAUSE_END = re.compile(r"[,;:.!?]|\s-+\s|\bbut\b", re.I)
+
+
+def negated(text: str, at: int) -> bool:
+    """True when a negation stands in the same clause before position AT."""
+    clause = CLAUSE_END.split(text[:at])[-1]
+    return bool(NEGATION.search(clause))
+
+
 def first_state(text: str) -> str:
+    """The state a line states. A running or waiting word wins over a done word on the
+    same line (the work is not over while a reply says it still runs); a done word that
+    follows a negation is not a state at all."""
+    text = text.replace(chr(0x2019), "'")
     best, best_at = "", None
     for state, pat in STATE_WORDS:
+        if state == "done":
+            continue
         m = pat.search(text)
         if m and (best_at is None or m.start() < best_at):
             best, best_at = state, m.start()
-    return best
+    if best:
+        return best
+    for m in STATE_WORDS[0][1].finditer(text):
+        if not negated(text, m.start()):
+            return "done"
+    return ""
 
 
 def states_in(reply: str) -> dict:
