@@ -5,7 +5,8 @@
 
 An outward verb is send, post, book, pay, buy, email, text, publish, submit or message,
 in any of its forms. A hit is a sentence that uses one as an ACTION it asks for: the verb
-opens the sentence, or follows a word that makes it an instruction or a plan (to, then,
+opens the sentence or a clause after a comma (when an object follows), or follows a word
+that makes it an instruction or a plan (to, then,
 and, or, will, should, must, can, may, please, you, we, I, just, now, also). A noun
 use ("the text", "a message", "an email") has an article or an adjective before it, so
 it is not a hit. A sentence that refuses ("never", "not", "no", "nothing", "without",
@@ -36,6 +37,8 @@ LEAD = {"to", "then", "and", "or", "will", "should", "must", "can", "may", "plea
         "we", "i", "just", "now", "also", "next", "first", "always", "might", "would"}
 NEG = {"never", "not", "no", "nothing", "nor", "without", "cannot", "can't", "don't", "doesn't",
        "won't", "refuse", "refuses", "refused", "none", "nobody", "isn't", "aren't"}
+OBJECT = {"the", "a", "an", "it", "them", "him", "her", "that", "this", "your", "their", "my",
+          "any", "each", "all", "to", "out", "us", "me", "one", "every", "everything"}
 SENT = re.compile(r"(?<=[.!?:;])\s+|\n\s*\n")
 BULLET = re.compile(r"\n(?=\s*(?:[-*+>]\s|\d{1,3}[.)]\s|#{1,6}\s))")
 LEADING = re.compile(r"^\s*(?:[-*+>]\s+|\d{1,3}[.)]\s+|#{1,6}\s+)+")
@@ -54,11 +57,19 @@ def sentences(text: str) -> list:
 
 
 def hit(sentence: str) -> bool:
-    words = WORD.findall(sentence.lower())
+    low = sentence.lower()
+    found = list(WORD.finditer(low))
+    words = [m.group(0) for m in found]
     if any(w in NEG for w in words):
         return False
-    for i, w in enumerate(words):
-        if w in FORMS and (i == 0 or words[i - 1] in LEAD):
+    for i, m in enumerate(found):
+        if m.group(0) not in FORMS:
+            continue
+        if i == 0 or words[i - 1] in LEAD:
+            return True
+        # After a comma it opens a clause ("When it is done, email the owner"), but a list
+        # ("photos, text and links") does not, so it also needs an object after it.
+        if low[: m.start()].rstrip().endswith(",") and i + 1 < len(words) and words[i + 1] in OBJECT:
             return True
     return False
 
