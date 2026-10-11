@@ -12,7 +12,9 @@
 #   - capture names the repository's size limit (25 MB unless the README says another)
 #     and where a bigger file stays (the buyer's store unless the platform wrote that
 #     Drive is connected), and a fault prints the default;
-#   - what each skill must say (task 5.8, 6.1, 5.4, 7.24, 5.7, 7.35, 7.38).
+#   - what each skill must say (task 5.8, 6.1, 5.4, 7.24, 5.7, 7.35, 7.38);
+#   - a contradiction with the record is said first, with the date: the line is in what
+#     every prompt injects (task 7.40).
 set -u
 # shellcheck source=lib/harness.sh
 . "$(dirname "$0")/lib/harness.sh"
@@ -174,5 +176,17 @@ done
 for need in "00-inbox/" "attachments/" "extend the open change" "do each one now" "never goes in git" "not built yet" "not fetched" "from memory"; do
   if { has "$capture" "$need"; }; then h_ok "capture: says [$need]"; else h_fail "capture: missing [$need]"; fi
 done
+
+# --- 5. 7.40: the contradiction line reaches the model on every prompt.
+h_tenant_env "$home_s" tenant-a "BBD_CHANNEL=stable"
+h_hook_json UserPromptSubmit cwd="$repo" session_id=s-skill-1 prompt="Please write a job posting." \
+  | h_launch contradiction "$home_s" -- "$boot" prompt plugin
+ctx=$(h_run_out contradiction | python3 -c 'import json,sys
+d=json.load(sys.stdin); print(d.get("hookSpecificOutput",{}).get("additionalContext",""), end="")')
+if { has "$ctx" "contradicts something their own record shows"; }; then h_ok "contradiction: injected on a prompt"; else h_fail "contradiction: not injected"; fi
+if { has "$ctx" "quote the earlier line with its date"; }; then h_ok "contradiction: quote and date"; else h_fail "contradiction: no quote and date"; fi
+if { has "$ctx" "Never soften it or hold it for later"; }; then h_ok "contradiction: never softened or held"; else h_fail "contradiction: may be softened"; fi
+a=$(pos "$ctx" "say so first"); b=$(pos "$ctx" "then do what they asked")
+if [ "$a" -ge 0 ] && [ "$b" -gt "$a" ]; then h_ok "contradiction: said first, then the ask is done"; else h_fail "contradiction: order wrong"; fi
 
 h_done
