@@ -452,6 +452,11 @@ session API (`tests/test-no-session-api.sh`).
 | model | a model in the same line (opus, sonnet, haiku, fable) as the session's has a later release date in `data/models.json` | repository and newer model |
 | fresh-session | the session's compaction count (`state/compactions/<session_id>`) has reached 3, or `context_tokens` is at least 60 percent of the model's `context_window`; the thresholds are the two constants at the top of `lib/notices.py`, his to change | home, session and step: said again only when the count rises to the next multiple of 3 (at 3, 6, 9) or the share enters the next 20-point band past 60 (at 60, 80, 100), the key being `fresh-session:<session_id>:<trigger>:<step>` |
 
+The fresh-session text also carries one short sentence saying that a new business or area
+of life is added the same way, by saying so in the fresh session (the first-weeks
+requirement "a new business or area is added by saying so"); it is words in the notice,
+said with it and never repeated on its own, not an instruction injected on every prompt.
+
 The text of each is `text/notices/<name>.md`, filled in with the versions and names,
 and asks the model to say the one sentence in its first reply and then let it rest.
 A ship notice's sentence is the one `lib/ship.py` stored, wrapped by

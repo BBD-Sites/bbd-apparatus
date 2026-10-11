@@ -252,6 +252,8 @@ h_assert_eq "$(event_name c3)" SessionStart "the third compaction: still one Ses
 if has "$c" "compacted" && has "$c" "RULE-ALPHA"; then h_ok "the third compaction: the compact step's own injection is still there"; else h_fail "the third compaction: the compact injection is missing"; fi
 if has "$c" "fresh session" && has "$c" "3 times"; then h_ok "the third compaction: the advice is folded in and names the count"; else h_fail "the third compaction: no fresh-session advice"; fi
 h_assert_eq "$(cat "$home/.claude/bbd-apparatus/state/compactions/s-c")" 3 "the third compaction: the count is 3"
+if has "$c" "by saying so in the fresh session"; then h_ok "the third compaction: the advice says a new area is added by saying so"; else h_fail "the third compaction: the advice does not say how a new area is added"; fi
+if has "$c" "—" || has "$c" "–"; then h_fail "the third compaction: the advice carries a dash"; else h_ok "the third compaction: the advice carries no em or en dash"; fi
 start c4 "$home" s-c compact claude-opus-5-5 "$latest_cli (Claude Code)"
 if has "$(ctx c4)" "fresh session"; then h_fail "the fourth compaction: the advice was repeated"; else h_ok "the fourth compaction: the advice is not repeated at the same step"; fi
 if has "$(ctx c4)" "compacted"; then h_ok "the fourth compaction: the compact injection still runs"; else h_fail "the fourth compaction: the compact injection stopped"; fi
