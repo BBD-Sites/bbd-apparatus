@@ -1,6 +1,7 @@
 ---
 name: plan
-description: Keep the owner's to-dos, today's list, the weekly review, what they are waiting on, and plans from tomorrow to five years. Use when they say what they need to do, ask what today looks like, ask for a weekly review, or say their plans changed.
+description: The owner's planning loop, held back until the operator opens it. Reachable by its name only.
+disable-model-invocation: true
 allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}/launcher/bbd-launch.sh" skill plan)
 ---
 

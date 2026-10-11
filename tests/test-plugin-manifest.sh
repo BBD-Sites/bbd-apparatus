@@ -288,7 +288,14 @@ for d in "$TEMPLATE"/.claude/skills/*/; do
   check_skill "${d}SKILL.md" "$REPO_BOOT" repo
 done
 skill_names() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's#.*/##' | sort | tr '\n' ' '; }
-h_assert_eq "$(skill_names "$PLUGIN_DIR"/skills)" "$(skill_names "$TEMPLATE"/.claude/skills)" "the plugin and the template carry the same skill stubs"
+# A gated skill (data/skill-gates.json) is in the plugin only: a buyer's vault never gets its
+# stub until the gate opens on stable, in the same signed edit that adds the stub back here.
+gated=$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])))))' "$root/data/skill-gates.json")
+expected=""
+for n in $(skill_names "$PLUGIN_DIR"/skills); do
+  if [[ " $gated " != *" $n "* ]]; then expected="$expected$n "; fi
+done
+h_assert_eq "$(skill_names "$TEMPLATE"/.claude/skills)" "$expected" "the template carries the plugin's skill stubs, less the gated ones ($gated)"
 
 # --- the template marker: the shape the launcher reads, with the tenant left empty so a
 # copy that provisioning has not filled never acts; filled, the same file passes.

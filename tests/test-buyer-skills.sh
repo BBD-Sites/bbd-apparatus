@@ -33,7 +33,10 @@ pos() { python3 -c 'import sys; print(sys.argv[1].find(sys.argv[2]))' "$1" "$2";
 for s in $SKILLS; do
   f="$root/text/skills/$s.md"
   if [ -s "$f" ]; then h_ok "$s: the text exists"; else h_fail "$s: text/skills/$s.md is missing"; continue; fi
-  for stub in "$root/plugin/skills/$s/SKILL.md" "$root/templates/tenant-repo/.claude/skills/$s/SKILL.md"; do
+  stubs="$root/plugin/skills/$s/SKILL.md"
+  # a gated skill has no stub in the tenant template (docs/skills.md, the planning gate)
+  [ "$s" = plan ] || stubs="$stubs $root/templates/tenant-repo/.claude/skills/$s/SKILL.md"
+  for stub in $stubs; do
     if [ -f "$stub" ]; then h_ok "$s: stub ${stub#"$root"/}"; else h_fail "$s: stub ${stub#"$root"/} is missing"; fi
   done
   body=$(cat "$f")
@@ -90,6 +93,15 @@ h_assert_empty "$(out_of plan "$home_s")" "plan: nothing is printed on stable"
 h_assert_eq "$(h_run_code plan-hs)" 0 "plan: closed, the event still exits 0"
 skill plan "$home_n"
 h_assert_eq "$(out_of plan "$home_n")" "$(cat "$root/text/skills/plan.md")" "plan: the text is printed on next"
+
+# plan on stable is genuinely absent for a buyer: the tenant template carries no plan stub,
+# and the plugin stub cannot be picked by its description on any channel.
+if [ ! -e "$root/templates/tenant-repo/.claude/skills/plan" ]; then h_ok "plan: the tenant template has no plan skill"; else h_fail "plan: the tenant template still carries the plan stub"; fi
+planstub="$root/plugin/skills/plan/SKILL.md"
+planfront=$(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && $0 == "---" { exit } NR > 1 { print }' "$planstub")
+if printf '%s\n' "$planfront" | grep -q '^disable-model-invocation: true$'; then h_ok "plan: the plugin stub cannot be invoked by the model"; else h_fail "plan: the plugin stub does not set disable-model-invocation: true"; fi
+plandesc=$(printf '%s\n' "$planfront" | sed -n 's/^description:[[:space:]]*//p')
+if printf '%s' "$plandesc" | grep -q -i -E 'use when|to-do|today|weekly|review|waiting|plans'; then h_fail "plan: the stub description still carries trigger words: $plandesc"; else h_ok "plan: the stub description carries no trigger words"; fi
 
 # a name with no text prints nothing.
 skill no-such-skill "$home_n"
@@ -173,7 +185,7 @@ for need in "openspec/changes/" "extend it" "proposal.md" "tasks.md" "Keep it cu
 done
 
 # 7.24 / 5.7 capture.
-for need in "00-inbox/" "attachments/" "extend the open change" "do each one now" "never goes in git" "not built yet" "not fetched" "from memory"; do
+for need in "00-inbox/" "attachments/" "extend the open change" "do each one now" "never goes in git" "not built yet" "not fetched" "from memory" "its own parallel agent" "how many were started" "the owner sends it from their own account"; do
   if { has "$capture" "$need"; }; then h_ok "capture: says [$need]"; else h_fail "capture: missing [$need]"; fi
 done
 
