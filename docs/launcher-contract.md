@@ -783,6 +783,52 @@ merged and tried again, three times at most. A remote that cannot be reached lea
 commit local (`offline`) and the next turn pushes it; a merge git refuses (unrelated
 histories) is aborted (`failed`) and the remote is left as it was.
 
+**A branch that takes pull requests only.** Some remotes refuse every push to a branch
+and take changes only through a pull request (a protected branch or a ruleset). A plain
+push there would be refused on every turn and the saves would pile up on one machine,
+until the start-of-turn pull could no longer fast-forward. So when git reports the push
+as `remote rejected` and the remote's message names a pull request or a protected branch
+(GitHub's GH006 and GH013 both do), the same commits land through a pull request; no
+repository is named or special-cased, and a branch that accepts pushes never reaches
+this path:
+
+- if the remote branch already holds every change the local one holds (the pull request
+  merged; a squash merge counts, since merging the local head in would change nothing),
+  the local branch is moved back to it with `git reset --keep`, which touches no page the
+  remote does not already carry, and the old head is kept under
+  `refs/vault-save/backup/<branch>` (`realigned`);
+- otherwise HEAD is pushed, as a plain push, to one long-lived save branch,
+  `vault-save/<branch>`. A save branch holding commits this copy lacks (another surface's
+  save, or what a squash merge left behind) is merged in first under the keep-both rules,
+  so every push to it is a fast-forward; one holding anything outside the vault is not
+  merged and nothing is pushed (`withheld`). A save branch deleted after its merge is
+  started again;
+- then the GitHub CLI, when it is installed and signed in, reuses the open pull request
+  from the save branch or opens one ("Save your notes"), and turns on squash auto-merge
+  (`proposed`). When the branch is pushed but that step could not be done, the status
+  says why: `proposed:no-gh`, `proposed:no-pr` or `proposed:no-auto-merge`;
+- the local branch stays ahead until the pull request merges. The next prompt's pull
+  moves it back (`pulled`), but only when every local commit is on the save branch and
+  the remote branch carries all of it; otherwise the next save does (`realigned`). So the
+  branch keeps pulling, and no page is ever missing from the disk in between.
+
+Nothing is forced and nothing pushed is rewritten. A save branch the remote refuses too
+leaves the commit local (`failed`), on disk, for the next turn.
+
+**A copy already stranded.** A copy whose saves piled up before this path existed (many
+commits ahead, some behind) is recovered by hand, with no session running in it:
+
+```
+python3 <checkout>/lib/vaultsync.py recover <vault> [--deadline <seconds>]
+```
+
+It saves and lands everything through the pull request as above, waits (900 seconds by
+default) for the pull request to merge, then moves the branch back to the remote's and
+keeps the old head under `refs/vault-save/backup/<branch>-<UTC time>`. It prints one
+line: `proposed+recovered:<backup ref>`, or `proposed+waiting` when the pull request has
+not merged in time (the branch is left where it was and the next save finishes it), or
+the save's own status when there was nothing to recover or it could not land.
+
 **Settling a page.** A page that holds two versions is recorded in
 `state/settle/<repo hash>.txt`, both by the surface that merged it and by the surface
 that later fast-forwards it in. Every prompt reads that file (`lib/vaultsync.py settle`),
