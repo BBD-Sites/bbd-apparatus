@@ -442,9 +442,7 @@ h_mark "$vault9" tenant-a
 remote9=$tmp/ninth.git
 cloud9=$tmp/cloud9
 git clone -q "$remote9" "$cloud9" 2>/dev/null
-for c in "$cloud9"; do
-  git -C "$c" config user.name "$H_GIT_NAME"; git -C "$c" config user.email "$H_GIT_EMAIL"; git -C "$c" config commit.gpgsign false
-done
+git -C "$cloud9" config user.name "$H_GIT_NAME"; git -C "$cloud9" config user.email "$H_GIT_EMAIL"; git -C "$cloud9" config commit.gpgsign false
 git -C "$cloud9" checkout -q -b claude/abc
 feat9=$tmp/feat9
 git clone -q "$remote9" "$feat9" 2>/dev/null
