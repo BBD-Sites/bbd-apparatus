@@ -1,9 +1,11 @@
 name: test
 
 on:
+  # No push trigger, deliberately. A change lands by fast-forward push of the
+  # reviewed pull request head (docs/channels.md), so the push to next was the
+  # same commit this run already tested, and next's head promoted to stable was
+  # tested when it landed on next. The push run only repeated it.
   pull_request:
-    branches: [next, stable]
-  push:
     branches: [next, stable]
 
 permissions:
