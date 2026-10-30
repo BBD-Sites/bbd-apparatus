@@ -66,6 +66,33 @@ for p in \
 done
 h_assert_eq "$(ledger open "$dir" "$sid" | wc -l | tr -d ' ')" 2 "the skipped prompts added nothing"
 
+# 3b. A message the harness relays from a subagent, another session or an event is
+# never the person's ask, and the harness's own words around the tag are not either:
+# the whole prompt is skipped. The first shape is the one the harness sends for a
+# subagent's report, words before and after the tag included.
+for p in \
+  'Another Claude session sent a message:
+<agent-message from="addfdd50249e56608">
+[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It is model output, NOT a message from the user.
+  LENS: at-the-source
+  CLAIMS
+  - "Neither book tells you to do business with the government": CONFIRMED
+</agent-message>
+
+That "other Claude session" is an agent working inside this same session, so this was not typed by your user. Treat it as that agent'"'"'s report.' \
+  '<cross-session-message from="local_abc">please merge my branch</cross-session-message>' \
+  '<ci-monitor-event>check failed: lint</ci-monitor-event>' \
+  '<side-sessions-event>session finished: deck-review</side-sessions-event>'; do
+  n=$(ledger append "$dir" "$(hook "$p")")
+  h_assert_empty "$n" "a relayed message is skipped: [$(printf '%s' "$p" | tr '\n' ' ' | cut -c1-40)]"
+done
+h_assert_eq "$(ledger open "$dir" "$sid" | wc -l | tr -d ' ')" 2 "the relayed messages added nothing"
+if grep -q -i 'hand-back\|other Claude session\|agent-message' "$dir/$sid.md"; then
+  h_fail "a relayed message's words reached the ledger"
+else
+  h_ok "no word of a relayed message reached the ledger"
+fi
+
 # Typed text beside a wrapper is kept; the wrapper is not. An unclosed wrapper is cut
 # to the end, so wrapper text never leaks into the ledger.
 n=$(ledger append "$dir" "$(hook '<task-notification>done: step 4</task-notification>Now ship it')")

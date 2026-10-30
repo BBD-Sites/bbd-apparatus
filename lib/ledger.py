@@ -34,7 +34,9 @@ injected on every prompt and after every compaction until a reply closes them.
 A number is given once and never again, so "number 2" means the same ask for the
 whole session, even after it is closed. Skipped, because none of them is the person's
 ask: a prompt that is empty once the harness's own wrappers are removed, a slash
-command, a JSON-shaped prompt and a system notification. A token shape is masked
+command, a JSON-shaped prompt, a system notification, and a message the harness relays
+from a subagent, another session or an event (its wording before and after the tag is
+the harness's too, so the whole prompt is skipped). A token shape is masked
 before anything is written. Every command exits 0: a launcher never fails a turn.
 """
 from __future__ import annotations
@@ -68,6 +70,20 @@ WRAPPER_TAGS = (
     "local-command-caveat",
 )
 NOT_USER_INPUT = "SYSTEM NOTIFICATION - NOT USER INPUT"
+# A whole prompt the harness relays from somewhere other than the person: a
+# subagent's report handed back to the session, a message from another session, a
+# CI or side-session event. The harness wraps the relay in its own words before and
+# after the tag, so nothing beside the tag is typed either; the whole prompt is
+# skipped. One session recorded nineteen of its own checkers' reports as the person's
+# asks, and then held every reply until each report was answered by number.
+RELAYED = (
+    "<agent-message",
+    "[Subagent hand-back]",
+    "Another Claude session sent a message",
+    "<cross-session-message",
+    "<ci-monitor-event",
+    "<side-sessions-event",
+)
 
 
 def path_for(ledger_dir: str, sid: str) -> str | None:
@@ -86,6 +102,8 @@ def strip_wrappers(text: str) -> str:
 def clean(prompt: str) -> str:
     """The person's ask as one line, or the empty string when there is none."""
     if not isinstance(prompt, str):
+        return ""
+    if any(mark in prompt for mark in RELAYED):
         return ""
     typed = strip_wrappers(prompt)
     if NOT_USER_INPUT in typed:

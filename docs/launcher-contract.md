@@ -394,9 +394,12 @@ spaces folded>`, by `lib/ledger.py`. A number is given once and never again, so
 `done` with its number. Not recorded, because none is the person's ask: a prompt that
 is empty once the harness's own wrappers are removed (`<task-notification>`,
 `<system-reminder>` and the parts of a slash command), a slash command, a JSON-shaped
-prompt, and a system notification. Typed text beside a wrapper is recorded on its own;
-an unclosed wrapper is cut to the end of the prompt. One item keeps at most 4,000
-characters.
+prompt, a system notification, and a message the harness relays from somewhere other
+than the person (`<agent-message>`, a subagent's hand-back, `<cross-session-message>`,
+`<ci-monitor-event>`, `<side-sessions-event>`; the harness's own words before and after
+the tag are not typed either, so the whole prompt is skipped). Typed text beside a
+wrapper is recorded on its own; an unclosed wrapper is cut to the end of the prompt.
+One item keeps at most 4,000 characters.
 
 An item is `open` when it is said, then `running`, `waiting` or `done`. The Stop gate
 (section 13) reads each reply for where every pending ask stands and moves the item
