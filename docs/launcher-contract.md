@@ -796,16 +796,19 @@ repository is named or special-cased, and a branch that accepts pushes never rea
 this path:
 
 - if the remote branch already holds every change the local one holds (the pull request
-  merged; a squash merge counts, since merging the local head in would change nothing),
+  merged; a squash merge counts, since merging the local head in would change nothing,
+  and so does a merge the remote has since filed or edited pages after, or one where the
+  save branch took a commit this copy lacks: a commit on the remote held the whole branch),
   the local branch is moved back to it with `git reset --keep`, which touches no page the
   remote does not already carry, and the old head is kept under
   `refs/vault-save/backup/<branch>` (`realigned`);
 - otherwise HEAD is pushed, as a plain push, to one long-lived save branch,
   `vault-save/<branch>`. A save branch holding commits this copy lacks (another surface's
-  save, or what a squash merge left behind) is merged in first under the keep-both rules,
-  so every push to it is a fast-forward; one holding anything outside the vault is not
-  merged and nothing is pushed (`withheld`). A save branch deleted after its merge is
-  started again;
+  save) is merged in first under the keep-both rules, so every push to it is a
+  fast-forward; one holding anything outside the vault is not merged and nothing is pushed
+  (`withheld`). One whose pull request already merged is recorded as merged without taking
+  its old copies, so a page the remote has filed since does not come back. A save branch
+  deleted after its merge is started again;
 - then the GitHub CLI, when it is installed and signed in, reuses the open pull request
   from the save branch or opens one ("Save your notes"), and turns on squash auto-merge
   (`proposed`). When the branch is pushed but that step could not be done, the status
