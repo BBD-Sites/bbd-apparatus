@@ -18,7 +18,7 @@ Whoever lands a pull request verifies before the fast-forward push, with the lau
 git -c gpg.ssh.allowedSignersFile=plugin/allowed_signers verify-commit <head>
 ```
 
-It must print a good signature for the head being pushed. The test workflow runs the same check on every pull request into a channel and on every push to one, and goes red on an unsigned or wrongly signed head. Every commit of a pull request is signed, not only its tip, so any earlier commit of it can be fast-forwarded on its own and still verify.
+It must print a good signature for the head being pushed. The test workflow runs the same check on every pull request into a channel (the head it checks is the head that is then fast-forwarded), and goes red on an unsigned or wrongly signed head. Every commit of a pull request is signed, not only its tip, so any earlier commit of it can be fast-forwarded on its own and still verify.
 
 A rebase makes new commits, and a new commit needs a new signature. Rebase with the signing options set, which signs each commit it re-creates:
 
