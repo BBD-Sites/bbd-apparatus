@@ -111,6 +111,7 @@ GitHub CLI's, only for a branch that takes pull requests only.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -290,6 +291,44 @@ def blob(git: Git, sha: str) -> bytes:
     return git.run("cat-file", "blob", sha).stdout
 
 
+def settle_additions(text: bytes) -> bytes:
+    """Rewrite `git merge-file --diff3` output. A clash whose common version holds no
+    lines there (both sides only added) keeps this surface's lines, then the other's,
+    with no marker lines. Any other clash keeps both versions marked, in the two-part
+    form without the common section, so a line one side removed never comes back
+    unseen (spec capability vault-save-merges)."""
+    head = b"<<<<<<< " + KEEP_THIS.encode()
+    base = b"||||||| before"
+    tail = b">>>>>>> " + KEEP_OTHER.encode()
+    out, mine, before, theirs, part = [], [], [], [], None
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip(b"\r\n")
+        if part is None:
+            if bare == head:
+                part, mine, before, theirs = "mine", [], [], []
+            else:
+                out.append(line)
+        elif part == "mine" and bare == base:
+            part = "before"
+        elif part in ("mine", "before") and bare == b"=======":
+            part = "theirs"
+        elif part == "theirs" and bare == tail:
+            if before:
+                out += [head + b"\n", *mine, b"=======\n", *theirs, tail + b"\n"]
+            else:
+                # --diff3 keeps lines both sides added alike inside the clash. Line
+                # the two additions up and write each shared line once, in place,
+                # with what only one side added around it (this surface's first).
+                for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, mine, theirs, autojunk=False).get_opcodes():
+                    out += mine[i1:i2] if op == "equal" else mine[i1:i2] + theirs[j1:j2]
+            part = None
+        else:
+            {"mine": mine, "before": before, "theirs": theirs}[part].append(line)
+    if part is not None:  # an unterminated clash: leave the text exactly as merge-file wrote it
+        return text
+    return b"".join(out)
+
+
 def keep_both(git: Git, path: str) -> str:
     """Resolve one conflicted path so that no word is lost. Returns "marked" for a text
     page now holding both versions, "other" for a binary file, "kept" otherwise."""
@@ -320,18 +359,18 @@ def keep_both(git: Git, path: str) -> str:
                 with open(p, "wb") as f:
                     f.write(content)
                 paths.append(p)
-            m = subprocess.run(["git", "merge-file", "-p", "-L", KEEP_THIS, "-L", "before", "-L", KEEP_OTHER, *paths],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=git.clock.left())
+            m = subprocess.run(["git", "merge-file", "-p", "--diff3", "-L", KEEP_THIS, "-L", "before", "-L", KEEP_OTHER,
+                                *paths], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=git.clock.left())
         if m.returncode < 0 or m.returncode > 127:
             # merge-file itself failed: keep both whole, one after the other, marked.
             merged = (b"<<<<<<< " + KEEP_THIS.encode() + b"\n" + a.rstrip(b"\n") + b"\n=======\n"
                       + b.rstrip(b"\n") + b"\n>>>>>>> " + KEEP_OTHER.encode() + b"\n")
         else:
-            merged = m.stdout
+            merged = settle_additions(m.stdout)
         with open(full, "wb") as f:
             f.write(merged)
         git.run("add", "--", path)
-        return "marked" if m.returncode != 0 or MARK_THIS.search(merged.decode("utf-8", "replace")) else "kept"
+        return "marked" if MARK_THIS.search(merged.decode("utf-8", "replace")) else "kept"
     survivor = ours or theirs
     if survivor:
         with open(full, "wb") as f:
