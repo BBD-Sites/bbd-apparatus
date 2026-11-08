@@ -128,6 +128,67 @@ put "$vault" "30-projects/alpha.md" "alpha from the phone"
 h_assert_eq "$(sync_in "$vault")" pushed "the settled page is saved"
 h_assert_empty "$(python3 "$sync_py" settle "$vault" "$settle1" "$(h_repo_root)/text/settle.md")" "a settled page is no longer named"
 
+# 6b. Both surfaces only appended to the same page: both additions are kept, with no
+# marker lines, and the page is not named to settle (a-save-keeps-both-additions).
+add() { printf '%s\n' "$3" >>"$1/$2"; }
+put "$vault" "40-areas/answers.md" "# Answers"
+sync_in "$vault" >/dev/null
+surface_pull
+add "$surface" "40-areas/answers.md" "- the phone's answer"
+surface_save "phone appends"
+add "$vault" "40-areas/answers.md" "- the desktop's answer"
+status=$(sync_in "$vault")
+case "$status" in kept-both*) h_fail "two appends were marked as two versions: $status" ;; *) h_ok "two appends are not two versions ($status)" ;; esac
+page=$(cat "$vault/40-areas/answers.md")
+if has "$page" "the phone's answer" && has "$page" "the desktop's answer"; then h_ok "both appended answers are on the page"; else h_fail "an appended answer was lost: $page"; fi
+if has "$page" "<<<<<<<" || has "$page" ">>>>>>>" || has "$page" "======="; then h_fail "marker lines on an append-only clash: $page"; else h_ok "no marker lines"; fi
+h_assert_empty "$(python3 "$sync_py" settle "$vault" "$settle1" "$(h_repo_root)/text/settle.md")" "the appended page is not named to settle"
+h_assert_eq "$(remote_head)" "$(head_of "$vault")" "the merged page is pushed"
+
+# 6c. One surface's additions already hold the other's: each entry once, unmarked.
+surface_pull
+add "$surface" "40-areas/answers.md" "- entry A"
+add "$surface" "40-areas/answers.md" "- entry B"
+surface_save "phone appends A B"
+add "$vault" "40-areas/answers.md" "- entry A"
+add "$vault" "40-areas/answers.md" "- entry B"
+add "$vault" "40-areas/answers.md" "- entry C"
+add "$vault" "40-areas/answers.md" "- entry D"
+sync_in "$vault" >/dev/null
+page=$(cat "$vault/40-areas/answers.md")
+once=1; for e in A B C D; do [ "$(grep -c -- "- entry $e" "$vault/40-areas/answers.md")" -eq 1 ] || once=0; done
+if [ "$once" -eq 1 ]; then h_ok "A, B, C and D appear once each"; else h_fail "entries lost or doubled: $page"; fi
+if has "$page" "<<<<<<<"; then h_fail "marker lines where one side's additions held the other's: $page"; else h_ok "no marker lines when one side's additions held the other's"; fi
+
+# 6c2. A line both sides added in the middle of a clash is written once (X A Y, not X A A Y).
+surface_pull
+add "$surface" "40-areas/answers.md" "- entry M"
+add "$surface" "40-areas/answers.md" "- entry Y"
+surface_save "phone appends M Y"
+add "$vault" "40-areas/answers.md" "- entry X"
+add "$vault" "40-areas/answers.md" "- entry M"
+sync_in "$vault" >/dev/null
+page=$(cat "$vault/40-areas/answers.md")
+ok=1; for e in X M Y; do [ "$(grep -c -- "- entry $e" "$vault/40-areas/answers.md")" -eq 1 ] || ok=0; done
+if [ "$ok" -eq 1 ] && ! has "$page" "<<<<<<<"; then h_ok "a line both added mid-clash appears once, unmarked"; else h_fail "a shared mid-clash line was doubled or marked: $page"; fi
+
+# 6d. One side removed a line the other edited: both versions stay marked and the page
+# is named, so a removed line (a scrubbed number) never comes back unseen.
+put "$vault" "40-areas/call.md" "$(printf 'intro\ncard 1234 5678\noutro')"
+sync_in "$vault" >/dev/null
+surface_pull
+printf 'intro\noutro\n' >"$surface/40-areas/call.md"
+surface_save "scrub the number"
+printf 'intro\ncard 1234 5678 (verified)\noutro\n' >"$vault/40-areas/call.md"
+status=$(sync_in "$vault")
+h_assert_eq "$status" "kept-both:1" "a removal clashing with an edit is two versions"
+page=$(cat "$vault/40-areas/call.md")
+if has "$page" "<<<<<<< kept from this surface" && has "$page" ">>>>>>> kept from the other surface"; then h_ok "the removal and the edit are marked"; else h_fail "a removal was resolved unseen: $page"; fi
+note=$(python3 "$sync_py" settle "$vault" "$settle1" "$(h_repo_root)/text/settle.md")
+if has "$note" "40-areas/call.md"; then h_ok "the page with a removal is named to settle"; else h_fail "the removal page is not named: [$note]"; fi
+put "$vault" "40-areas/call.md" "$(printf 'intro\noutro')"
+sync_in "$vault" >/dev/null
+
 # 7. A page one side deleted and the other changed keeps the changed page.
 put "$vault" "30-projects/gone.md" "to be deleted"
 sync_in "$vault" >/dev/null
