@@ -18,6 +18,7 @@ jobs:
         # Ubuntu 24.04 for the cloud session machine.
         os: [macos-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 32
     steps:
       - uses: actions/checkout@v4
         with:
