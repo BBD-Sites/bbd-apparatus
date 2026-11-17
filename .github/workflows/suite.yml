@@ -33,7 +33,7 @@ on:
 
 jobs:
   already_green:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     outputs:
       tree: ${{ steps.check.outputs.tree }}
       skip: ${{ steps.check.outputs.skip }}
