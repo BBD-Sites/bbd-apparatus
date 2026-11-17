@@ -16,7 +16,7 @@ jobs:
       matrix:
         # macOS for the stock Mac a tenant runs (bash 3.2, BSD tools, no jq);
         # Ubuntu 24.04 for the cloud session machine.
-        os: [macos-latest, ubuntu-24.04]
+        os: [macos-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
