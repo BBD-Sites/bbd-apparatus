@@ -81,12 +81,15 @@ no repository is special-cased), the same commits land through a pull request in
   * If the remote branch already holds every change the local one holds (the pull
     request merged), the local branch is moved back to it (`git reset --keep`, which
     changes no page the remote does not already carry), the old head kept under
-    refs/vault-save/backup/<branch>. Status `realigned`.
+    refs/vault-save/backup/<branch>. Status `realigned`. A merged pull request counts
+    even when the remote has since filed or edited those pages, or the save branch took
+    a commit this copy lacks: a commit on the remote held everything on the save branch.
   * Otherwise HEAD is pushed, as a plain push, to one long-lived save branch,
     vault-save/<branch>. A save branch with commits this copy lacks (another surface's
-    save, or the commits a squash merge left behind) is merged in first under the same
-    keep-both-versions rules, so the push is always a fast-forward; one holding a change
-    outside the vault is not merged (`withheld`).
+    save) is merged in first under the same keep-both-versions rules, so the push is
+    always a fast-forward; one holding a change outside the vault is not merged
+    (`withheld`). One whose pull request already merged is recorded as merged without
+    taking its old copies, so a page the remote has filed since does not come back.
   * Then, with the GitHub CLI when it is installed and signed in, the open pull request
     from that branch is reused or one is opened, and squash auto-merge is turned on.
     Status `proposed`, or `proposed:no-gh`, `proposed:no-pr`, `proposed:no-auto-merge`
@@ -108,6 +111,7 @@ GitHub CLI's, only for a branch that takes pull requests only.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -166,6 +170,9 @@ class Git:
         self.env["GIT_TERMINAL_PROMPT"] = "0"
         self.env["LC_ALL"] = "C"
         self.env["LANGUAGE"] = "C"
+        # A status that refreshes the index holds index.lock, and the deadline below kills
+        # git outright, so the lock stays behind and stops every later save and pull.
+        self.env["GIT_OPTIONAL_LOCKS"] = "0"
 
     def run(self, *args, data: bytes | None = None, env_extra: dict | None = None):
         env = dict(self.env)
@@ -284,6 +291,44 @@ def blob(git: Git, sha: str) -> bytes:
     return git.run("cat-file", "blob", sha).stdout
 
 
+def settle_additions(text: bytes) -> bytes:
+    """Rewrite `git merge-file --diff3` output. A clash whose common version holds no
+    lines there (both sides only added) keeps this surface's lines, then the other's,
+    with no marker lines. Any other clash keeps both versions marked, in the two-part
+    form without the common section, so a line one side removed never comes back
+    unseen (spec capability vault-save-merges)."""
+    head = b"<<<<<<< " + KEEP_THIS.encode()
+    base = b"||||||| before"
+    tail = b">>>>>>> " + KEEP_OTHER.encode()
+    out, mine, before, theirs, part = [], [], [], [], None
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip(b"\r\n")
+        if part is None:
+            if bare == head:
+                part, mine, before, theirs = "mine", [], [], []
+            else:
+                out.append(line)
+        elif part == "mine" and bare == base:
+            part = "before"
+        elif part in ("mine", "before") and bare == b"=======":
+            part = "theirs"
+        elif part == "theirs" and bare == tail:
+            if before:
+                out += [head + b"\n", *mine, b"=======\n", *theirs, tail + b"\n"]
+            else:
+                # --diff3 keeps lines both sides added alike inside the clash. Line
+                # the two additions up and write each shared line once, in place,
+                # with what only one side added around it (this surface's first).
+                for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, mine, theirs, autojunk=False).get_opcodes():
+                    out += mine[i1:i2] if op == "equal" else mine[i1:i2] + theirs[j1:j2]
+            part = None
+        else:
+            {"mine": mine, "before": before, "theirs": theirs}[part].append(line)
+    if part is not None:  # an unterminated clash: leave the text exactly as merge-file wrote it
+        return text
+    return b"".join(out)
+
+
 def keep_both(git: Git, path: str) -> str:
     """Resolve one conflicted path so that no word is lost. Returns "marked" for a text
     page now holding both versions, "other" for a binary file, "kept" otherwise."""
@@ -314,18 +359,18 @@ def keep_both(git: Git, path: str) -> str:
                 with open(p, "wb") as f:
                     f.write(content)
                 paths.append(p)
-            m = subprocess.run(["git", "merge-file", "-p", "-L", KEEP_THIS, "-L", "before", "-L", KEEP_OTHER, *paths],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=git.clock.left())
+            m = subprocess.run(["git", "merge-file", "-p", "--diff3", "-L", KEEP_THIS, "-L", "before", "-L", KEEP_OTHER,
+                                *paths], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=git.clock.left())
         if m.returncode < 0 or m.returncode > 127:
             # merge-file itself failed: keep both whole, one after the other, marked.
             merged = (b"<<<<<<< " + KEEP_THIS.encode() + b"\n" + a.rstrip(b"\n") + b"\n=======\n"
                       + b.rstrip(b"\n") + b"\n>>>>>>> " + KEEP_OTHER.encode() + b"\n")
         else:
-            merged = m.stdout
+            merged = settle_additions(m.stdout)
         with open(full, "wb") as f:
             f.write(merged)
         git.run("add", "--", path)
-        return "marked" if m.returncode != 0 or MARK_THIS.search(merged.decode("utf-8", "replace")) else "kept"
+        return "marked" if MARK_THIS.search(merged.decode("utf-8", "replace")) else "kept"
     survivor = ours or theirs
     if survivor:
         with open(full, "wb") as f:
@@ -456,13 +501,39 @@ def carried(git: Git, remote_ref: str) -> bool:
     return r.stdout.decode("ascii", "replace").split("\n", 1)[0].strip() == tree
 
 
+def spent(git: Git, saved: str, remote_ref: str) -> bool:
+    """A commit on the remote branch held everything on the save branch: its pull request
+    merged. carried() asks that of the remote's tip only, which goes false for good once
+    the remote files or edits one of those pages, or when the save branch took a commit
+    this copy lacks. What the remote did to them later is the remote's own decision."""
+    remote = git.out("rev-parse", "-q", "--verify", remote_ref + "^{commit}")
+    base = git.out("merge-base", saved, remote) if remote else ""
+    if not base:
+        return False
+    paths = changed_between(git, base, saved)
+    if not paths:
+        return False  # nothing to prove merged
+    # By stdin: a bulk import's paths would not fit on a command line.
+    wanted = "%s..%s\n--\n%s\n" % (base, remote, "\n".join(paths))
+    r = git.run("rev-list", "--first-parent", "--reverse", "--stdin", data=wanted.encode("utf-8"))
+    for commit in r.stdout.decode("ascii", "replace").split():
+        if git.clock.spent():
+            return False
+        m = git.run("merge-tree", "--write-tree", saved, commit)  # git 2.38 and later
+        if m.returncode == 0 and m.stdout.decode("ascii", "replace").split("\n", 1)[0].strip() \
+                == git.out("rev-parse", commit + "^{tree}"):
+            return True
+    return False
+
+
 def realign(git: Git, remote_ref: str, backup: str) -> bool:
     """Move the current branch to the remote ref, keeping the old head under backup.
-    Only called when carried() holds; reset --keep refuses rather than overwrite a page
+    Only called when carried() or spent() holds; reset --keep refuses rather than overwrite a page
     with local changes."""
     head = git.out("rev-parse", "-q", "--verify", "HEAD")
     if not head or not git.ok("update-ref", "-m", "vault save: the branch before it was moved back", backup, head):
         return False
+    git.run("update-index", "-q", "--refresh")  # reset --keep refuses an unrefreshed index
     return git.ok("reset", "-q", "--keep", remote_ref)
 
 
@@ -557,7 +628,17 @@ def land_by_review(git: Git, branch: str, state: str, backup: str = "") -> tuple
             remote = git.out("rev-parse", "-q", "--verify", save_ref + "^{commit}")
         head = git.out("rev-parse", "HEAD")
         if remote and remote != head and not git.ok("merge-base", "--is-ancestor", remote, "HEAD"):
-            if git.ok("merge-base", "--is-ancestor", "HEAD", remote):
+            if spent(git, remote, remote_ref):
+                # Its pull request merged. Its old copies must not come back into this
+                # save: record it as merged and keep this copy's pages as they are.
+                if git.ok("merge-base", "--is-ancestor", "HEAD", remote):
+                    if realign(git, remote_ref, backup or BACKUP_PREFIX + branch):
+                        return "realigned", kept
+                    return "failed", kept
+                msg = "Bring in the other surface's changes to %s" % save
+                if not git.ok("merge", "-q", "--no-ff", "-s", "ours", "-m", msg, save_ref, env_extra=identity_env(git)):
+                    return "failed", kept
+            elif git.ok("merge-base", "--is-ancestor", "HEAD", remote):
                 if not git.ok("merge", "-q", "--ff-only", save_ref):
                     return "failed", kept
                 remember(git, state, head, git.out("rev-parse", "HEAD"), [])
@@ -810,8 +891,13 @@ def pull_branch(root: str, clock: Clock, state: str = "") -> str:
     if not git.ok("merge-base", "--is-ancestor", "HEAD", remote):
         # Saved through a pull request (REVIEW) that has since merged: every local commit
         # is on the save branch and the remote carries all of it, so move back to it.
-        saved = git.out("rev-parse", "-q", "--verify", "refs/remotes/origin/%s%s^{commit}" % (SAVE_PREFIX, branch))
-        if saved and git.ok("merge-base", "--is-ancestor", "HEAD", saved) and carried(git, remote_ref) \
+        save_ref = "refs/remotes/origin/%s%s" % (SAVE_PREFIX, branch)
+        # Another copy may have added to the save branch. Gone from the remote, what this
+        # copy last saw of it still proves the same thing.
+        git.run("fetch", "-q", "--no-tags", "origin", "+refs/heads/%s%s:%s" % (SAVE_PREFIX, branch, save_ref))
+        saved = git.out("rev-parse", "-q", "--verify", save_ref + "^{commit}")
+        if saved and git.ok("merge-base", "--is-ancestor", "HEAD", saved) \
+                and (carried(git, remote_ref) or spent(git, saved, remote_ref)) \
                 and realign(git, remote_ref, BACKUP_PREFIX + branch):
             remember(git, state, head, git.out("rev-parse", "HEAD"), [])
             return "pulled"

@@ -168,6 +168,47 @@ land "$bare" delete
 rm -f "$tmp/gh/pr"
 pull_in "$vault" >/dev/null
 
+# 6b. The save branch took one more commit from another copy (a fix so its check passes),
+# the pull request merged, and main then filed one of those pages. Moving main back must
+# not depend on main still holding the pages as they were, and the next save must not
+# bring the filed page back.
+fixed=$(h_fake_repo fixed)
+fbare=$(git -C "$fixed" remote get-url origin)
+h_mark "$fixed" tenant-a
+protect "$fbare"
+rm -f "$tmp/gh/pr"
+put "$fixed" "00-inbox/capture.md" "a capture"
+put "$fixed" "30-projects/page.md" "the page"
+h_assert_eq "$(sync_in "$fixed")" proposed "a save goes to the save branch"
+fw="$tmp/fw"
+git clone -q "$fbare" "$fw" 2>/dev/null
+git -C "$fw" checkout -q vault-save/main
+printf 'type: project\nthe page\n' >"$fw/30-projects/page.md"
+git -C "$fw" add -A
+h_git -C "$fw" commit -q -m "add the header the check wants"
+git -C "$fw" push -q origin HEAD:vault-save/main
+land "$fbare"
+mv "$fbare/hooks/pre-receive" "$fbare/hooks/pre-receive.off"
+git -C "$fw" fetch -q origin
+git -C "$fw" checkout -q -B filed origin/main
+git -C "$fw" rm -q 00-inbox/capture.md
+h_git -C "$fw" commit -q -m "file the capture"
+git -C "$fw" push -q origin HEAD:main
+mv "$fbare/hooks/pre-receive.off" "$fbare/hooks/pre-receive"
+rm -f "$tmp/gh/pr"
+fixed_old=$(head_of "$fixed")
+h_assert_eq "$(pull_in "$fixed")" pulled "main moves back though the pages changed after the merge"
+h_assert_eq "$(head_of "$fixed")" "$(on "$fbare" main)" "local main is the remote main"
+h_assert_eq "$(git -C "$fixed" rev-parse -q --verify refs/vault-save/backup/main)" "$fixed_old" "the old head is kept"
+if [ -e "$fixed/00-inbox/capture.md" ]; then h_fail "the filed capture came back"; else h_ok "the filed capture stays filed"; fi
+h_assert_eq "$(head -1 "$fixed/30-projects/page.md")" "type: project" "the page has the merged header"
+put "$fixed" "00-inbox/next.md" "the next note"
+h_assert_eq "$(sync_in "$fixed")" proposed "the next save goes to the save branch"
+h_assert_eq "$(git -C "$fbare" diff --name-only "main...vault-save/main")" "00-inbox/next.md" "its pull request holds only the new page"
+h_assert_empty "$(forced)" "no push was forced"
+rm -f "$tmp/gh/pr"
+
+
 # 7. A refused push never loses a change: with no CLI the branch still carries the note;
 # with the CLI failing the reason is named; with the save branch refused too, the note
 # stays committed locally and on disk.
