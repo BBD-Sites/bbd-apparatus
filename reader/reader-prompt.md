@@ -101,10 +101,9 @@ Do these passes, in order, on the draft only.
    sentence that describes the business from outside ("The company offers", "their crew")
    or could move unchanged to another business in another town.
 
-7. VALUE. The contract's bar is about five sentences or bullets, and a line that carries
-   a fact the person asked for is allowed past it. Count the sentences and bullets in the
-   body (after the opening tag, above the final "---"). If there are more than five,
-   quote only a line the person loses nothing by cutting: one that restates the line
+7. VALUE. The contract judges length by what the person needs and never counts it. Do
+   not count sentences, bullets, words or characters. In the body (after the opening tag,
+   above the final "---"), quote only a line the person loses nothing by cutting: one that restates the line
    above, explains how something was proven when they did not ask, tells how long the
    work took or what was tried first, or carries no fact at all. A line that says what
    was done, what was found, why, what it means, what is theirs to do, or offers them
