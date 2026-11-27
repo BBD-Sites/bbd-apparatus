@@ -15,6 +15,8 @@ read it back.
   ledger.py close <ledger-dir> <session-id> <n>         mark item <n> done
   ledger.py mark <ledger-dir> <session-id> <n> <state>  move item <n> to open, running,
                                                         waiting or done (a done item stays done)
+  ledger.py relayed <input-file>                        prints "relayed" when the harness,
+                                                        not the person, started the turn
   ledger.py account <ledger-dir> <session-id> <reply-file>
                                                         read the reply for where each pending
                                                         ask stands, move the items it names,
@@ -99,15 +101,28 @@ def strip_wrappers(text: str) -> str:
     return text
 
 
-def clean(prompt: str) -> str:
-    """The person's ask as one line, or the empty string when there is none."""
+def relayed(prompt: str) -> bool:
+    """True when the harness started the turn, not the person: a relayed message (RELAYED),
+    a system notification, or a finished background task with nothing typed beside it. A
+    slash command or an empty prompt is the person's own turn, so it is not relayed. On a
+    relayed turn the prompt step injects no reply contract: the harness's wake notice says
+    to add nothing while the last line still holds, and the contract, louder, made one
+    session restate the same question on every wake."""
     if not isinstance(prompt, str):
-        return ""
+        return False
     if any(mark in prompt for mark in RELAYED):
-        return ""
+        return True
     typed = strip_wrappers(prompt)
     if NOT_USER_INPUT in typed:
+        return True
+    return "<task-notification" in prompt and not typed.strip()
+
+
+def clean(prompt: str) -> str:
+    """The person's ask as one line, or the empty string when there is none."""
+    if not isinstance(prompt, str) or relayed(prompt):
         return ""
+    typed = strip_wrappers(prompt)
     one = " ".join(typed.split())
     if not one or one.startswith("/") or one.startswith("[{"):
         return ""
@@ -333,6 +348,15 @@ def main(argv: list) -> int:
             if n is not None:
                 print(n)
         return 0
+    if len(argv) == 2 and argv[0] == "relayed":
+        try:
+            with open(argv[1], encoding="utf-8") as f:
+                hook = json.load(f)
+        except (OSError, ValueError):
+            return 0
+        if isinstance(hook, dict) and relayed(hook.get("prompt")):
+            print("relayed")
+        return 0
     if len(argv) == 3 and argv[0] == "open":
         for n, _status, stamp, text in open_items(argv[1], argv[2]):
             print("%d. %s: %s" % (n, stamp, text))
@@ -365,7 +389,7 @@ def main(argv: list) -> int:
         except ValueError:
             pass
         return 0
-    print("usage: ledger.py append|open|render|close|mark|account ...", file=sys.stderr)
+    print("usage: ledger.py append|relayed|open|render|close|mark|account ...", file=sys.stderr)
     return 0
 
 

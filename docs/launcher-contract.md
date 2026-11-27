@@ -438,6 +438,18 @@ disk, and in a page the model reads, on the very next turn.
    with the pages named. It sits right after the apparatus's own texts, before the rules.
 6. The session's pending asks (open, running or waiting), oldest first, each under its number.
 
+**A turn the harness started.** When the prompt is a background event and not the
+person's (`lib/ledger.py relayed`: a relayed message as listed under the ask ledger
+above, a system notification, or a `<task-notification>` with nothing typed beside it),
+nothing that shapes a reply is injected: not the reply contract (item 1's first text),
+not the Stop gate's notes (item 4, which are left in place for the person's next typed
+turn) and not the pending asks (item 6). The witness rules, the settle note, the rules
+file and the standing instructions still go in. The harness's wake notice on such a
+turn says to add nothing while the last line still holds; the contract, injected
+beside it, out-shouted it, and one session restated the same closing question on 23
+wakes in one day. A slash command or an empty prompt is the person's own turn and gets
+the contract as before.
+
 **What a compaction injects, in order:** `text/compact-notice.md` (one sentence saying
 the session was compacted and that memory in the store is unaffected), then the rules
 file, the standing instructions and the open asks as above. The reply contract is not

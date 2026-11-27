@@ -107,9 +107,37 @@ for n in wrapper slash empty; do
   h_assert_eq "$(items "$ledger/$sid.md" | wc -l | tr -d ' ')" 2 "a $n prompt: nothing added to the ledger"
   case "$(ctx "$n")" in *"RULE-ALPHA"*) h_ok "a $n prompt: the rules are still injected" ;; *) h_fail "a $n prompt: the rules were not injected" ;; esac
 done
+
+# 3b. A turn the harness started, not the person: a finished background task, a CI event
+# and another session's message. Its wake notice says to add nothing while the last line
+# holds, so no reply contract, no open asks and no Stop gate note go in (the note waits
+# for the person's next typed turn); the witness rules, the rules file and the standing
+# instructions still do. A typed prompt after them gets the contract again.
+printf '%s\n' "NOTE-KEPT: the last reply left an ask out." \
+  | python3 "$(h_repo_root)/lib/notes.py" add "$base/state/notes" "$sid"
+prompt bg-task "$sid" "<task-notification><task-id>b1</task-id><status>completed</status><summary>Background command finished</summary></task-notification>"
+prompt bg-ci "$sid" "<ci-monitor-event>PR #12 checks passed</ci-monitor-event> The wake notice: add nothing if the last line holds."
+prompt bg-xs "$sid" "<cross-session-message from=\"s-other\">the other session is done</cross-session-message>"
+for n in bg-task bg-ci bg-xs; do
+  h_assert_hook_run "$n" "a background $n prompt"
+  c=$(ctx "$n")
+  case "$c" in *"Start with the answer"*|*"End with exactly one"*) h_fail "a background $n prompt: the reply contract was injected" ;; *) h_ok "a background $n prompt: no reply contract" ;; esac
+  case "$c" in *"Open asks in this session"*) h_fail "a background $n prompt: the open asks were injected" ;; *) h_ok "a background $n prompt: no open asks" ;; esac
+  case "$c" in *"NOTE-KEPT"*) h_fail "a background $n prompt: the Stop gate note was taken" ;; *) h_ok "a background $n prompt: the note is left for a typed turn" ;; esac
+  case "$c" in *"two separate checks"*"RULE-ALPHA"*"STANDING-ONE"*) h_ok "a background $n prompt: witness rules, rules and standing still inject" ;; *) h_fail "a background $n prompt: the witness rules, rules or standing are missing" ;; esac
+  h_assert_eq "$(items "$ledger/$sid.md" | wc -l | tr -d ' ')" 2 "a background $n prompt: nothing added to the ledger"
+done
+prompt typed-after "$sid" "<task-notification>a task finished</task-notification>Is the footer live yet?"
+c=$(ctx typed-after)
+case "$c" in *"Start with the answer"*"NOTE-KEPT"*) h_ok "a typed prompt after the background turns: the contract and the waiting note inject" ;; *) h_fail "a typed prompt after the background turns: the contract or the note is missing" ;; esac
+case "$c" in *"Open asks in this session"*"3. Is the footer live yet?"*) h_ok "a typed prompt after the background turns: the open asks inject" ;; *) h_fail "a typed prompt after the background turns: the open asks are missing" ;; esac
+for n in slash empty; do
+  case "$(ctx "$n")" in *"Start with the answer"*) h_ok "a $n prompt is the person's own turn: the contract injects" ;; *) h_fail "a $n prompt: the contract was not injected" ;; esac
+done
+
 prompt beside "$sid" "<system-reminder>the harness talking</system-reminder>Ship it today."
 case "$(items "$ledger/$sid.md" | tail -n 1)" in
-  "3. open "*"Z: Ship it today.") h_ok "typed text beside a wrapper is recorded without the wrapper" ;;
+  "4. open "*"Z: Ship it today.") h_ok "typed text beside a wrapper is recorded without the wrapper" ;;
   *) h_fail "typed text beside a wrapper was not recorded on its own" ;;
 esac
 
@@ -124,7 +152,7 @@ case "$c" in *"Ask number 6:"*) h_ok "the cap: the newest ask is kept" ;; *) h_f
 case "$c" in *"1. Make the home page"*) h_fail "the cap: the oldest ask was kept over newer ones" ;; *) h_ok "the cap: the oldest ask is dropped first" ;; esac
 case "$c" in *"not shown"*) h_ok "the cap: the dropped count is said" ;; *) h_fail "the cap: nothing says asks were dropped" ;; esac
 case "$c" in *"RULE-ALPHA"*"STANDING-ONE"*) h_ok "the cap: the rules and standing instructions survive" ;; *) h_fail "the cap: the rules or standing instructions were cut" ;; esac
-h_assert_eq "$(items "$ledger/$sid.md" | wc -l | tr -d ' ')" 9 "the cap: the ledger file itself keeps every ask"
+h_assert_eq "$(items "$ledger/$sid.md" | wc -l | tr -d ' ')" 10 "the cap: the ledger file itself keeps every ask"
 
 # A rules file alone past the cap is cut at the cap, and the cut is said; no ask fits.
 huge=$(printf 'RULE-LONG %.0s' $(seq 1 700))
