@@ -430,9 +430,13 @@ disk, and in a page the model reads, on the very next turn.
    empty, gives no section.
 3. `.apparatus/standing.md` in the tenant repository, the standing instructions, the
    same way.
-4. When the vault holds a page with two versions kept (section 14), `text/settle.md`
+4. When the Stop gate noted findings on the last reply (section 13), those notes, once,
+   under one line saying the person has already read that reply, it is not to be sent
+   again, and this reply should follow them. They sit right after the apparatus's own
+   texts; taking them removes them.
+5. When the vault holds a page with two versions kept (section 14), `text/settle.md`
    with the pages named. It sits right after the apparatus's own texts, before the rules.
-5. The session's pending asks (open, running or waiting), oldest first, each under its number.
+6. The session's pending asks (open, running or waiting), oldest first, each under its number.
 
 **What a compaction injects, in order:** `text/compact-notice.md` (one sentence saying
 the session was compacted and that memory in the store is unaffected), then the rules
@@ -560,28 +564,36 @@ public source that carries release dates, so it is read from the model pages by 
 `launcher/events/stop-gate.sh` runs on every Stop, synchronously, before the ship step.
 It is the one place that may print a block decision. The reply the model has just
 finished (`last_assistant_message`) is read by an independent reader on the person's own
-plan, and when the reader finds something, the turn is held once with the findings as
-the reason, so the model sends a corrected reply. Stop fires after the reply is already
-on screen, so "read before it is sent" can only mean this: one loop-guarded block,
-followed by the corrected reply. Nothing else here reaches the person.
+plan. Stop fires after the reply is already on screen, so a block that asks for the
+reply again makes a second reply, which the person asked never to get. So nothing here
+ever asks for the reply again. A claim the reader could not find a source for holds the
+turn once, to check it at its source and add one short correcting line only if a fact is
+false; every other finding is handed to the session's next reply. Nothing else here reaches the person.
 
-**One pass, one block, every finding.** The reader runs first, then the two
-deterministic checks are worked out, and everything found goes into the turn's single
-block. Before this, a deterministic hold spent the turn's one block before the reader ran,
-so the corrected reply's reader findings (an unsourced claim, fragments) were never shown.
-Now the first pass reads the draft once (one call, never two), and the block carries, in
-this order and only for the parts that exist: the reader's findings (or, in a cloud session
-where the reader could not run, the assembled prompt to hand to a reader through the Agent
-tool), the hard sentences of the reading-level check, and the asks left out. A draft with
-only deterministic findings gets a block with only those; one with only the reader's gets
-only those.
+**One pass; one block, for a claim only.** The reader runs first, then the two
+deterministic checks are worked out, so the draft is read once (one call, never two)
+and every finding is in hand before anything is decided. Then:
+
+- The reader's CLAIMS findings (a claim with no source, or one that may not be true) hold
+  the turn once. The reason quotes them under one sentence asking to check each at its
+  source, and ends: the reply is already on the person's screen, do not send it again,
+  fix the cause, and only if a fact in it is false add one short line that corrects it;
+  otherwise end the turn with no new text.
+- Everything else (the reader's other findings, the hard sentences of the reading-level
+  check, the asks left out) is a note for the session's next reply, never a block
+  (`lib/notes.py`, `state/notes/<session_id>`, 0600 in a 0700 directory, at most 2,500
+  characters, a note already there not added twice, files older than seven days removed
+  in passing). The next prompt hands it over once (section 11) and removes it.
+
+Before this, every finding went into one block whose instruction was to send the reply
+again, and each such block produced a second full reply the person had to read twice.
 
 **The ask ledger check.** The asks the reader is given are taken from the ledger, then the
 reply is read for where each pending ask stands (section 11) and the ledger moves to
 match, on every pass. A reply of 50 prose words or more that names no state for an ask
-still pending adds those asks to the block, one per line, under one sentence asking for
-the reply again with each ask under its own number, marked done, running or waiting. A
-shorter reply is never held for this, and is not read; it can still close the asks it
+still pending has those asks noted for the next reply, one per line, under one sentence
+asking that reply to give each ask its own number, marked done, running or waiting. A
+shorter reply has nothing noted for this, and is not read; it can still close the asks it
 names. A session with no ledger has nothing to check.
 
 **The reading-level check** (design D24) is measured on the first pass of a draft that has
@@ -592,8 +604,8 @@ are left out) with the Flesch-Kincaid grade level, and a reply is over the ceili
 the whole text grades above `CEILING_REPLY` (5, his to change; `CEILING_COPY` is 3, for
 copy a buyer's own customers read) and at least one sentence of eight words or more
 grades above it too. The hardest sentences (at most five, worst first) are quoted in the
-block under one sentence that says to cut the idea or say it in plainer words, never to
-chop it into fragments. The score is a flag, never a target; what decides whether a reply
+note for the next reply under one sentence that says to write in plainer words, never
+chopping sentences into fragments. The score is a flag, never a target; what decides whether a reply
 is ready is the reader's pass. `readability.py grade FILE` prints a text's grade, for
 measuring a week of replies before the ceiling is changed.
 
@@ -601,9 +613,9 @@ measuring a week of replies before the ceiling is changed.
 true: this Stop follows a block) the read is **advisory**: the ask check and the
 reading-level check add nothing because the turn's block is spent, the reader still
 runs under the same bound, its receipt is written with `advisory=1`, and its verdict is
-only recorded, never printed as a block (except in the one case under "a score chased",
-below); a cloud session's hand-back is not used either.
-Without this, a corrected reply went out unread and with no receipt (design D28: the
+only recorded, never printed as a block; a cloud session's hand-back is not used
+either, and nothing is noted.
+Without this, the line that follows a block went out unread and with no receipt (design D28: the
 reader judges the reply; the grade is only a flag). Then both of these must hold, on
 either pass; otherwise the step exits 0 with nothing printed and one line in the log
 saying which failed:
@@ -656,37 +668,26 @@ are not findings. `fix` holds only with at least one finding. Anything else (no
 the status is `no-claude`, `timeout` or `failed`), the reply is not let through unread:
 the same one block per turn is printed, and its reason is the assembled prompt
 (`reader-prompt.md` filled with the contract, the rules, the asks and the draft) under
-the instruction to give it to a reader through the Agent tool, act on each finding and
-send the corrected reply. The receipt records `handed-back`. On a desktop home the
+the instruction to give it to a reader through the Agent tool, under the same terms as
+a claim: the reply is not sent again, and one short correcting line is added only if a
+fact in it is false. The receipt records `handed-back`. On a desktop home the
 same failure lets the reply through, logged, because there the next turn's reader will
 run and a block would only hold the person up.
 
 **The block** is `{"decision":"block","reason":"..."}`, the reason being the reader's
-findings, one per line with their heading, under one sentence asking for the corrected
-reply (at most 4,000 characters for that part), followed by the reading-level and
-missing-ask parts when they exist. It is printed at most once per turn, with one exception
-below: `lib/loopguard.py` keeps `state/loopguard/<session_id>.turn` keyed by `prompt_id`
+CLAIMS findings, one per line with their heading (at most ten), under the sentence above.
+It is printed at most once per turn: `lib/loopguard.py` keeps `state/loopguard/<session_id>.turn` keyed by `prompt_id`
 (the harness's own turn identity), or by the draft's hash when the hook carries no
 `prompt_id`, and a second `fix` in the same turn is logged and let through.
 `stop_hook_active` is the first line of that guard; the file is the second, for a
 harness that does not send the field.
 
-**The one exception: a score chased** (design D45). The grade alone may hold a reply once,
-and a score can be chased: the writer chops sentences into fragments to pass the grader.
-So when the first block quoted the hard sentences (whether or not the reader also found
-something in that pass), the second pass is read as before and, if the reader's verdict is
-`fix`, ONE more block is allowed, carrying the reader's findings alone. A first block that
-did not quote the hard sentences (the reader's findings, or the missing asks, or a cloud
-hand-back) leaves the second pass advisory. The guard records what the last block carried
-(`<turn key> <count> grade|other` in the `.turn` file; `loopguard.py tag` prints it) and
-holds the cap itself: no caller can obtain more than two blocks in a turn (`MAX_CAP`), a
-third pass can never block, and any error in the guard (a session id that is not a plain
-word, an unwritable directory, a damaged record, a record that cannot be written) reads as
-"no tag" and refuses any block beyond the first, so a fault can never make the extra block
-repeat. The first block alone fails open: a fault in the guard cannot hold back the one
-block a turn is owed. The receipt of such a pass records `blocked=1` and `second_block=1`; every receipt
-also records `grade_flag` and `asks_flag` (whether the first-pass block quoted hard
-sentences or listed missing asks).
+**No second block.** Design D45 allowed one more block when the first had quoted the hard
+sentences, because a writer might chop sentences to pass the grade. The grade no longer
+holds a reply, so that case cannot arise and the gate asks the guard for one block only.
+The guard keeps its cap and tag (`lib/loopguard.py`), and never allows more than two.
+Every receipt records `grade_flag` and `asks_flag` (whether the first pass found hard
+sentences or missing asks) and `noted` (whether anything was noted for the next reply).
 
 **The receipt**, `lib/receipt.py`, is written for every read and every attempt, never
 for a skip: session, prompt_id, status (`read`, `unparseable`, `empty`, `no-claude`,

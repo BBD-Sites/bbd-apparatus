@@ -7,7 +7,9 @@
 #      bounded to four seconds, fail open), before the settle note below is worked out;
 #   2. one JSON object is printed for the dispatcher to pass on, carrying, in order:
 #      the reply contract and the witness rules (text/, the apparatus's own words, so
-#      they change here and not in the plugin), the tenant's rules file named in the
+#      they change here and not in the plugin), what the Stop gate noted on the last
+#      reply (lib/notes.py, taken once: that reply was already shown, so its findings
+#      shape this one instead), the tenant's rules file named in the
 #      vault marker, the standing instructions (.apparatus/standing.md) and the open
 #      asks, all within 6,000 characters, the oldest asks dropped first.
 # Stdout here becomes model context, so nothing but that object is printed, and a
@@ -40,10 +42,15 @@ settle=$(python3 "$BBD_CHECKOUT/lib/vaultsync.py" settle "$BBD_PROJECT_ROOT" \
   "$BBD_BASE/state/settle/$(python3 "$BBD_CHECKOUT/lib/vaultsync.py" state-name "$BBD_PROJECT_ROOT" 2>>"$BBD_LOG")" \
   "$BBD_CHECKOUT/text/settle.md" 2>>"$BBD_LOG")
 
+# What the Stop gate found on the last reply, which the person has already read
+# (lib/notes.py): handed to this reply once, then gone.
+lastnote=$(python3 "$BBD_CHECKOUT/lib/notes.py" take "$BBD_BASE/state/notes" "$sid" 2>>"$BBD_LOG")
+
 python3 "$BBD_CHECKOUT/lib/inject.py" \
   --event UserPromptSubmit --cap "$CAP" --ledger "$ledger_dir" --session "$sid" \
   --text "$BBD_CHECKOUT/text/reply-contract.md" \
   --text "$BBD_CHECKOUT/text/witness-rules.md" \
+  --inline "$lastnote" \
   --inline "$settle" \
   --section "Rules from your repository (${BBD_RULES:-none named})" "${rules:-/nonexistent}" \
   --section "Standing instructions" "$BBD_PROJECT_ROOT/.apparatus/standing.md" \

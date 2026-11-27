@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # The read-draft Stop step (docs/launcher-contract.md section 13), run through the
 # bootstrap exactly as a session would fire it, with a fake `claude` standing in for
-# the reader. A verdict of send passes silently; a verdict with findings blocks once,
-# with the findings as the reason, and the same turn is never blocked again (the
+# the reader. A verdict of send passes silently; a verdict with a claim to check blocks
+# once, with the claims as the reason and never a request to send the reply again (it is
+# already on screen); its other findings are noted for the next reply; the same turn is
+# never blocked again (the
 # second pass carries stop_hook_active; a pass without it is capped by the loop guard);
 # a new turn may block again. A draft already read, a draft under fifty prose words,
 # and a repository with no rules file are not read at all; a second pass is read in
@@ -172,15 +174,19 @@ if printf '%s\n' "$envs" | grep -q '^CLAUDECODE='; then h_fail "CLAUDECODE reach
 case "$(h_calls claude)" in *"--tools ''"*|*'--tools ""'*) h_ok "the reader runs with no tools" ;; *) h_fail "the reader was not run with no tools: $(h_calls claude)" ;; esac
 case "$(h_calls claude)" in *"--model sonnet"*) h_ok "the reader runs on sonnet" ;; *) h_fail "the reader was not run on sonnet" ;; esac
 
-# 2. A verdict with findings: one block, the findings as the reason, the token masked.
+# 2. A verdict with findings: one block, the claim as the reason, the token masked; the
+# other findings are noted for the next reply, never put in the block.
 h_calls_reset claude
 stop fix s2 p2 "$tmp/long-2.md" -- H_FAKE_CLAUDE_STDOUT_FILE="$tmp/fix.txt"
 h_assert_hook_run fix "fix verdict"
 h_assert_eq "$(decision fix)" block "fix verdict: the decision is block"
 r=$(reason fix)
-if has "$r" 'RESTATE: "I pointed it at the new address": which address'; then h_ok "fix verdict: the reason quotes the finding"; else h_fail "fix verdict: the reason lacks the finding: $r"; fi
-if has "$r" "2. put our hours in the footer"; then h_ok "fix verdict: the unanswered ask is in the reason"; else h_fail "fix verdict: the unanswered ask is missing"; fi
-if has "$r" "corrected reply"; then h_ok "fix verdict: the reason asks for the corrected reply"; else h_fail "fix verdict: the reason does not ask for a corrected reply"; fi
+if has "$r" 'CLAIMS: "The key in the settings is'; then h_ok "fix verdict: the reason quotes the claim"; else h_fail "fix verdict: the reason lacks the claim: $r"; fi
+if has "$r" "RESTATE:"; then h_fail "fix verdict: a finding that is not a claim is in the block"; else h_ok "fix verdict: only the claim is in the block"; fi
+n=$(cat "$base/state/notes/s2" 2>/dev/null)
+if has "$n" 'RESTATE: "I pointed it at the new address": which address' && has "$n" "2. put our hours in the footer"; then h_ok "fix verdict: the other findings are noted for the next reply"; else h_fail "fix verdict: the other findings were not noted: $n"; fi
+if has "$n" "$body"; then h_fail "fix verdict: the token reached the note"; else h_ok "fix verdict: the token never reached the note"; fi
+if has "$r" "do not send it again" && has "$r" "one short line"; then h_ok "fix verdict: the reason says one short line, never the reply again"; else h_fail "fix verdict: the reason does not say how to fix it: $r"; fi
 if has "$r" "6 sentences"; then h_fail "fix verdict: the count line was taken as a finding"; else h_ok "fix verdict: the count line is not a finding"; fi
 if has "$r" "ids: none"; then h_fail "fix verdict: a line below the trailer was taken as a finding"; else h_ok "fix verdict: the trailer is not read"; fi
 if has "$(h_run_out fix)" "$body"; then h_fail "fix verdict: the token reached stdout"; else h_ok "fix verdict: the token never reached stdout"; fi
@@ -284,7 +290,8 @@ if has "$r" "You are a reader, not an editor"; then h_ok "cloud, no claude: the 
 if has "$r" "The form sends again"; then h_ok "cloud, no claude: the prompt carries the draft"; else h_fail "cloud, no claude: the prompt lacks the draft"; fi
 if has "$r" "Start with the answer"; then h_ok "cloud, no claude: the prompt carries the reply contract"; else h_fail "cloud, no claude: the prompt lacks the reply contract"; fi
 if has "$r" "RULE-ALPHA"; then h_ok "cloud, no claude: the prompt carries the rules"; else h_fail "cloud, no claude: the prompt lacks the rules"; fi
-if has "$r" "corrected reply"; then h_ok "cloud, no claude: the reason asks for the corrected reply"; else h_fail "cloud, no claude: the reason does not ask for the corrected reply"; fi
+if has "$r" "do not send it again"; then h_ok "cloud, no claude: the reason says not to send the reply again"; else h_fail "cloud, no claude: the reason does not say not to send the reply again"; fi
+if has "$r" "corrected reply"; then h_fail "cloud, no claude: the reason asks for a corrected reply"; else h_ok "cloud, no claude: the reason never asks for a corrected reply"; fi
 if has "$r" "$body"; then h_fail "cloud, no claude: the token reached the reason"; else h_ok "cloud, no claude: the token never reached the reason"; fi
 h_assert_eq "$(receipt "$tmp/long-10.md" status)" handed-back "cloud, no claude: the receipt says handed-back"
 h_assert_eq "$(receipt "$tmp/long-10.md" blocked)" 1 "cloud, no claude: the receipt records the block"

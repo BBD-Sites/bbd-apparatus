@@ -11,11 +11,10 @@ prompt_id, which changes only when the person sends a new prompt; a caller with 
 prompt_id passes the draft's hash instead, which guards against the same draft being
 blocked twice. The record is <guard-dir>/<session-id>.turn, one line, "<turn-key>
 <count> [tag]"; a new turn key resets the count. The tag says what the last block
-carried (the Stop gate writes "grade" for a block that quoted the hard sentences, whatever
-else it carried, and "other" for any other), and `tag` prints it for the same turn key,
-or nothing. The default cap is 1; a caller may ask for 2 (one more block when the first
-quoted the hard sentences and the second-pass reader says fix) and the guard clamps any
-larger ask to MAX_CAP, 2. Files older than seven days are removed on
+carried, as the caller names it, and `tag` prints it for the same turn key, or nothing.
+The default cap is 1, and the Stop gate asks for no more: the reading level no longer
+holds a reply, so the second block it once allowed after a grade hold (design D45) cannot
+arise. A caller may still ask for 2, and the guard clamps any larger ask to MAX_CAP, 2. Files older than seven days are removed on
 the way past.
 
 Why one: a block makes the model write its reply again, and a check that fires on the

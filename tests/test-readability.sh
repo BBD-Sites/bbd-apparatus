@@ -3,10 +3,11 @@
 # (lib/readability.py) is pure python with no network: plain text is under the
 # fifth-grade ceiling and says nothing; hard text is over it and the hardest sentences
 # come back worst first; code, links' addresses, identifiers and the lines under the
-# closing `---` are not graded; a short sentence is never quoted. At Stop, a reply over
-# the ceiling is held once with those sentences quoted, before the reader is run; the
-# corrected reply (the second pass) goes through, and a plain reply goes on to the
-# reader. Run through the bootstrap as a session fires it, with a fake `claude`.
+# closing `---` are not graded; a short sentence is never quoted. At Stop the reply is
+# already on screen, so a reply over the ceiling is never held: after the reader has run,
+# those sentences are noted for the session's next reply; a claim the reader found still
+# holds the turn once, without the grade in it; a second pass goes through. Run through
+# the bootstrap as a session fires it, with a fake `claude`.
 set -u
 # shellcheck source=lib/harness.sh
 . "$(dirname "$0")/lib/harness.sh"
@@ -117,25 +118,29 @@ reason() { printf '%s' "$(h_run_out "$1")" | h_json_field reason 2>/dev/null; }
 reads() { h_calls claude | grep -c -e '-p --model' || true; }
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
-# 1. A hard reply is read first (one call), then held once with the hard sentences quoted;
-# the reader found nothing here, so the block carries only the grade.
+notes_dir="$home/.claude/bbd-apparatus/state/notes"
+note() { cat "$notes_dir/$1" 2>/dev/null; }
+rcpt_of() { python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$1" 2>/dev/null; }
+
+# 1. A hard reply is read first (one call). It is already on the person's screen, so it
+# is not held: the hard sentences are noted for the session's next reply instead.
 h_calls_reset claude
 stop hard s1 p1 "$tmp/hard.md"
 h_assert_hook_run hard "a hard reply"
-h_assert_eq "$(decision hard)" block "a hard reply is held"
-r=$(reason hard)
-if has "$r" '"The authentication middleware was misconfigured'; then h_ok "the hard sentence is quoted in the reason"; else h_fail "the reason does not quote the sentence: $r"; fi
-if has "$r" "ceiling is 5"; then h_ok "the reason names the ceiling"; else h_fail "the reason does not name the ceiling"; fi
-if has "$r" "Do not chop"; then h_ok "the reason says not to chop sentences into fragments"; else h_fail "the reason does not warn against chopping"; fi
-if has "$r" "The contact form now submits"; then h_fail "a plain sentence is quoted"; else h_ok "a plain sentence is not quoted"; fi
-h_assert_eq "$(reads)" 1 "the reader runs once, before the grade hold is decided"
-if has "$r" "A reader read this reply"; then h_fail "a send verdict added reader findings to the block"; else h_ok "a send verdict adds nothing to the grade block"; fi
-rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard.md" 2>/dev/null)
-case "$rcpt" in *'"blocked": 1'*) h_ok "the first pass wrote a receipt that records the block" ;; *) h_fail "the first-pass receipt is wrong: [$rcpt]" ;; esac
+h_assert_empty "$(h_run_out hard)" "a hard reply is not held"
+n=$(note s1)
+if has "$n" '"The authentication middleware was misconfigured'; then h_ok "the hard sentence is noted for the next reply"; else h_fail "the note does not quote the sentence: $n"; fi
+if has "$n" "ceiling is 5"; then h_ok "the note names the ceiling"; else h_fail "the note does not name the ceiling"; fi
+if has "$n" "without chopping"; then h_ok "the note says not to chop sentences into fragments"; else h_fail "the note does not warn against chopping"; fi
+if has "$n" "The contact form now submits"; then h_fail "a plain sentence is quoted"; else h_ok "a plain sentence is not quoted"; fi
+h_assert_eq "$(reads)" 1 "the reader runs once"
+if has "$n" "A reader found"; then h_fail "a send verdict added reader findings to the note"; else h_ok "a send verdict adds nothing to the grade note"; fi
+rcpt=$(rcpt_of "$tmp/hard.md")
+case "$rcpt" in *'"blocked": 0'*) h_ok "the receipt records no block" ;; *) h_fail "the first-pass receipt is wrong: [$rcpt]" ;; esac
+case "$rcpt" in *'"grade_flag": 1'*) h_ok "the receipt records the grade flag" ;; *) h_fail "the receipt does not record the grade flag: [$rcpt]" ;; esac
 
-# 1b. One block, both kinds of finding: the reader says fix (an unsourced claim) and the
-# reply is above the ceiling. The single block quotes the reader's finding AND the hard
-# sentence, and the reader was called once.
+# 1b. The reader says fix with a claim AND the reply is above the ceiling: the claim holds
+# the turn once, the hard sentence is noted, never put in the block; one reader call.
 cat >"$tmp/fix-claim.txt" <<'EOF2'
 VERDICT: fix
 RESTATE
@@ -160,32 +165,27 @@ EOF2
 { cat "$tmp/hard.md"; printf '\nThe redirect rules were rewritten as part of this pass.\n'; } >"$tmp/hard-both.md"
 h_calls_reset claude
 READER_OUT="$tmp/fix-claim.txt" stop both s7 p20 "$tmp/hard-both.md"
-h_assert_eq "$(decision both)" block "a fix verdict and a hard reply: held"
+h_assert_eq "$(decision both)" block "a claim and a hard reply: held for the claim"
 r=$(reason both)
-if has "$r" 'CLAIMS: "every unauthenticated request was silently forwarded"'; then h_ok "the one block carries the reader's finding"; else h_fail "the reader's finding is missing from the block: $r"; fi
-if has "$r" '"The authentication middleware was misconfigured'; then h_ok "the one block also quotes the hard sentence"; else h_fail "the hard sentence is missing from the block: $r"; fi
+if has "$r" 'CLAIMS: "every unauthenticated request was silently forwarded"'; then h_ok "the block carries the claim"; else h_fail "the claim is missing from the block: $r"; fi
+if has "$r" "harder to read"; then h_fail "the block carries the grade"; else h_ok "the grade is not in the block"; fi
+if has "$(note s7)" '"The authentication middleware was misconfigured'; then h_ok "the grade is noted for the next reply"; else h_fail "the grade was not noted: $(note s7)"; fi
 h_assert_eq "$(reads)" 1 "both findings cost one reader call"
 h_assert_eq "$(h_run_out both | grep -c '"decision"')" 1 "exactly one block was printed"
-# The first block quoted hard sentences, so a chased score is possible: the corrected
-# reply (fragments) read with a fix verdict earns one more block, the reader's alone.
+# The second pass of that turn can no longer block: the one extra block of design D45
+# (a score chased after a grade hold) cannot arise once the grade holds nothing.
 { printf 'Redirect bad. Fixed it. Checked prod. Form works. Endpoint gone. Site same. Nothing needed from you. Ask if you want more. The page is fast. The mail sends.\n'; printf 'Every other page is as it was and you do not have to do anything more today. The old photos are gone. The text is short. The phone view is fine. The desktop view is fine. Nothing else moved.\n'; } >"$tmp/frag-both.md"
 READER_OUT="$tmp/fix-claim.txt" stop both2 s7 p20 "$tmp/frag-both.md" stop_hook_active=true
-h_assert_eq "$(decision both2)" block "reader findings plus grade in the first block, then a fix: one more block"
-if has "$(reason both2)" "harder to read"; then h_fail "the second block repeated the grade"; else h_ok "the second block is the reader's alone"; fi
-{ cat "$tmp/frag-both.md"; printf 'A last small edit.\n'; } >"$tmp/frag-both3.md"
-READER_OUT="$tmp/fix-claim.txt" stop both3 s7 p20 "$tmp/frag-both3.md" stop_hook_active=true
-h_assert_empty "$(h_run_out both3)" "the third pass of that turn cannot block"
+h_assert_empty "$(h_run_out both2)" "the second pass of that turn cannot block"
 
-# 2. The reply that follows is the second pass: it is never held again, however hard it
-# is, but it is read in advisory mode and a receipt records it (the reader judges the
-# reply; the grade is only a flag).
+# 2. A second pass is never held, however hard it is, but it is read in advisory mode and
+# a receipt records it (the reader judges the reply; the grade is only a flag).
 h_calls_reset claude
 { cat "$tmp/hard.md"; printf '\nThe corrected wording is shorter in places.\n'; } >"$tmp/hard-corrected.md"
 stop again s1 p1 "$tmp/hard-corrected.md" stop_hook_active=true
-h_assert_empty "$(h_run_out again)" "the second pass is never held again"
+h_assert_empty "$(h_run_out again)" "the second pass is never held"
 h_assert_eq "$(reads)" 1 "the second pass is read by the reader"
-rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard-corrected.md" 2>/dev/null)
-case "$rcpt" in *'"status": "read"'*) h_ok "the second pass wrote a receipt" ;; *) h_fail "no receipt for the second pass: [$rcpt]" ;; esac
+case "$(rcpt_of "$tmp/hard-corrected.md")" in *'"status": "read"'*) h_ok "the second pass wrote a receipt" ;; *) h_fail "no receipt for the second pass" ;; esac
 
 # 2b. A reader that says fix on that second pass cannot hold the reply: advisory only.
 cat >"$tmp/fix.txt" <<'EOF2'
@@ -213,58 +213,16 @@ EOF2
 h_calls_reset claude
 READER_OUT="$tmp/fix.txt" stop advisory s5 p9 "$tmp/hard3.md" stop_hook_active=true
 h_assert_empty "$(h_run_out advisory)" "a fix verdict on the second pass does not hold the reply"
-h_assert_eq "$(reads)" 1 "the second pass after a reading-level hold is read"
-rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/hard3.md" 2>/dev/null)
+h_assert_eq "$(reads)" 1 "the second pass is read"
+rcpt=$(rcpt_of "$tmp/hard3.md")
 case "$rcpt" in *'"verdict": "fix"'*'"blocked": 0'*|*'"blocked": 0'*'"verdict": "fix"'*) h_ok "the receipt records the fix verdict and no block" ;; *) h_fail "the advisory receipt is wrong: [$rcpt]" ;; esac
 
-# 2c. A score chased. The first block carried only the grade; the writer chops the
-# sentences into fragments to pass it; the second-pass reader says fix. That is the one
-# case where a second block is allowed, quoting the reader's findings. It is the last:
-# the cap is two blocks per turn.
-cat >"$tmp/fix-frag.txt" <<'EOF2'
-VERDICT: fix
-RESTATE
-- none
-CHAIN
-- none
-THE PERSON'S WORDS
-- none
-CLAIMS
-- none
-ANSWERED
-- none
-OWNER VOICE
-- none
-VALUE
-- 5 sentences or bullets in the body
-READING
-- "Config bad. Fixed. Done.": fragments, not sentences; say each idea in a full plain sentence
-CONTRACT
-- none
-EOF2
-h_calls_reset claude
-{ cat "$tmp/hard.md"; printf '\nThe rollout was repeated on the staging environment afterwards.\n'; } >"$tmp/hard-chase.md"
-stop chase1 s8 p30 "$tmp/hard-chase.md"
-h_assert_eq "$(decision chase1)" block "chased: the first pass holds on the grade alone"
-if has "$(reason chase1)" "A reader read this reply"; then h_fail "chased: the first block carried reader findings"; else h_ok "chased: the first block carried only the grade"; fi
-{ printf 'Config bad. Redirect wrong. Fixed it. Checked prod. Form works. Old endpoint gone. Site unchanged. Nothing needed.\n'; printf 'Everything else on the site is the same as it was and you do not need to do anything. The page loads fast. The form sends mail. The photos are small. The text is short. Ask me if you want more.\n'; } >"$tmp/frag1.md"
-READER_OUT="$tmp/fix-frag.txt" stop chase2 s8 p30 "$tmp/frag1.md" stop_hook_active=true
-h_assert_eq "$(decision chase2)" block "chased: a second-pass reader fix gets one more block"
-if has "$(reason chase2)" "fragments, not sentences"; then h_ok "chased: the second block quotes the reader's finding"; else h_fail "chased: the second block lacks the finding: $(reason chase2)"; fi
-if has "$(reason chase2)" "harder to read"; then h_fail "chased: the second block repeated the grade"; else h_ok "chased: the second block is the reader's alone"; fi
-{ cat "$tmp/frag1.md"; printf 'One more edit was made.\n'; } >"$tmp/frag2.md"
-READER_OUT="$tmp/fix-frag.txt" stop chase3 s8 p30 "$tmp/frag2.md" stop_hook_active=true
-h_assert_empty "$(h_run_out chase3)" "chased: a third pass cannot block"
-rcpt=$(python3 "$(h_repo_root)/lib/receipt.py" show "$home/.claude/bbd-apparatus/state/reader" "$tmp/frag2.md" 2>/dev/null)
-case "$rcpt" in *'"blocked": 0'*) h_ok "chased: the third pass receipt records no block" ;; *) h_fail "chased: the third pass receipt is wrong: [$rcpt]" ;; esac
-# The cap is held in the guard itself, whatever a caller asks for.
+# The guard still holds its cap itself, whatever a caller asks for (lib/loopguard.py).
 guard_dir="$tmp/guard-cap"
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a1=$?
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a2=$?
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir" gs t1 9; a3=$?
 h_assert_eq "$a1$a2$a3" "001" "the guard never allows a third block in a turn, even asked for nine"
-# A guard that cannot write its record fails closed for the extra block: the first block
-# went out, the record becomes unwritable, and no later pass can block (not once, not ever).
 guard_dir2="$tmp/guard-ro"
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir2" gr t1 1 grade; r1=$?
 chmod 444 "$guard_dir2/gr.turn"
@@ -272,30 +230,17 @@ python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir2" gr t1 2 grade; r2=
 python3 "$(h_repo_root)/lib/loopguard.py" allow "$guard_dir2" gr t1 2 grade; r3=$?
 chmod 644 "$guard_dir2/gr.turn"
 h_assert_eq "$r1$r2$r3" "011" "a record that cannot be written: the cap-2 call refuses, every time"
-# And through the gate: the first block quotes the grade, the record goes read-only, the
-# second-pass reader says fix, and nothing blocks.
-{ cat "$tmp/hard.md"; printf '\nA different closing line for the read-only record case.\n'; } >"$tmp/hard-ro.md"
-stop ro1 s9 p40 "$tmp/hard-ro.md"
-h_assert_eq "$(decision ro1)" block "read-only record: the first block still goes out"
-chmod 444 "$home/.claude/bbd-apparatus/state/loopguard/s9.turn"
-{ cat "$tmp/frag1.md"; printf 'Read-only record, pass two.\n'; } >"$tmp/frag-ro2.md"
-{ cat "$tmp/frag1.md"; printf 'Read-only record, pass three.\n'; } >"$tmp/frag-ro3.md"
-READER_OUT="$tmp/fix-frag.txt" stop ro2 s9 p40 "$tmp/frag-ro2.md" stop_hook_active=true
-h_assert_empty "$(h_run_out ro2)" "read-only record: a second-pass reader fix cannot block"
-READER_OUT="$tmp/fix-frag.txt" stop ro3 s9 p40 "$tmp/frag-ro3.md" stop_hook_active=true
-h_assert_empty "$(h_run_out ro3)" "read-only record: a third pass cannot block either"
-chmod 644 "$home/.claude/bbd-apparatus/state/loopguard/s9.turn"
-# A first block that carried the reader's findings but NOT the grade leaves the second
-# pass advisory: see the ask-ledger test (reader fix plus a missing ask, then silence).
 
-# 3. A harness that does not send stop_hook_active: the loop guard still caps it at one.
+# 3. The same turn again without stop_hook_active: still nothing held.
 stop capped s1 p1 "$tmp/hard.md"
-h_assert_empty "$(h_run_out capped)" "the same turn is not held a second time"
+h_assert_empty "$(h_run_out capped)" "the same turn is not held"
 
-# 4. A new turn may be held again (a different reply: the reader has a receipt for the last).
+# 4. A new turn with a hard reply: not held either, and noted again.
+rm -f "$notes_dir/s1"
 { cat "$tmp/hard.md"; printf '\nThe configuration across the environments was independently verified afterwards.\n'; } >"$tmp/hard2.md"
 stop next s1 p2 "$tmp/hard2.md"
-h_assert_eq "$(decision next)" block "a new turn may be held again"
+h_assert_empty "$(h_run_out next)" "a new turn with a hard reply is not held"
+if has "$(note s1)" "ceiling is 5"; then h_ok "a new turn's grade is noted again"; else h_fail "a new turn's grade was not noted"; fi
 
 # 5. A plain reply goes on to the reader.
 h_calls_reset claude
